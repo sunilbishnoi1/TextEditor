@@ -1,0 +1,28 @@
+# Visual Studio files and directories
+.vs/
+.vscode/
+x64/
+Debug/
+Release/
+*.aps
+*.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Build results
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.dll
+*.lib
+
+# Resource files (you might want to keep these)
+# *.ico
+# *.rc
+# Resource.h
+
+# Precompiled headers
+*.pch
