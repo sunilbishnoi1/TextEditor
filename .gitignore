@@ -1,29 +1,54 @@
-# Visual Studio files and directories
-.vs/
-.vscode/
-x64/
-WindowsProject1/x64/Debug
-Debug/
-Release/
-*.aps
-*.user
-*.sln
-*.vcxproj
-*.vcxproj.filters
-*.vcxproj.user
-
-# Build results
+# Build artifacts
 *.obj
-*.pdb
-*.ilk
 *.exe
 *.dll
 *.lib
-
-# Resource files (you might want to keep these)
-# *.ico
-# *.rc
-# Resource.h
-
-# Precompiled headers
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.log
+*.lastbuildstate
+*.cache
 *.pch
+*.rsp
+*.tmp
+*.o
+*.out
+
+# Visual Studio specific
+.vscode/
+.vs/
+*.user
+*.vcxproj.user
+*.vcxproj.filters
+*.opensdf
+*.sdf
+*.suo
+*.ncb
+*.aps
+*.sln.docstates
+
+# Build output folders
+Debug/
+Release/
+x64/
+x86/
+bin/
+obj/
+
+# System-specific
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.old
+*.~*
+
+# Dependency and cache files
+*.log
+*.cache
