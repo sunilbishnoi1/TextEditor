@@ -37,6 +37,9 @@ public:
     // Core Recording Operation
     void recordChange(const TextChange& change);
 
+    // Sets the internal current node pointer directly, Used after finding a matching state or navigating via history UI.
+    void setCurrentNode(std::shared_ptr<HistoryNode> node);
+
     // State Information & Navigation
     bool canUndo() const;
     bool canRedo() const;

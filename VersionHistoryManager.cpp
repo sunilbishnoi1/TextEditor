@@ -1,4 +1,5 @@
 #include "VersionHistoryManager.h"
+#include <Windows.h>
 
 // --- Helper Function: Apply Change ---
 
@@ -60,6 +61,27 @@ void VersionHistoryManager::recordChange(const TextChange& change) {
     currentNode = newNode;
 
     // Optional: Implement history pruning (e.g., limit depth or node count) here if needed.
+}
+
+
+void VersionHistoryManager::setCurrentNode(std::shared_ptr<HistoryNode> node) {
+    // Basic validation: Ensure the node actually exists (is part of the tree reachable from root)?
+    // This could involve walking up the parent chain from 'node' to see if we reach 'root'.
+    // For performance, we might skip this check, assuming the caller provides a valid node
+    // obtained from findNodeMatchingState or getHistoryTreeRoot/getChildren traversal.
+    if (node) { // At least check if it's not null
+        currentNode = node;
+        // NOTE: This function ONLY changes the internal pointer.
+        // It does NOT update the editor content or the 'textAtLastHistoryPoint' baseline.
+        // The caller (e.g., SyncHistoryManagerToEditor, History UI logic) is responsible
+        // for coordinating the editor state and baseline text updates.
+    }
+    else {
+        // Handle error: Tried to set current node to null? Log or throw?
+        // For robustness, perhaps revert to root? Or just ignore?
+        // Let's ignore for now, but logging would be good.
+        OutputDebugStringW(L"VersionHistoryManager::setCurrentNode called with null node.\n");
+    }
 }
 
 // --- State Information & Pointer Navigation ---
