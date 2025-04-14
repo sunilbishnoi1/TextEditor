@@ -2,7 +2,8 @@
 
 // Constructor for the root node
 HistoryNode::HistoryNode()
-    : timestamp(std::chrono::system_clock::now())
+    : timestamp(std::chrono::system_clock::now()),
+	commitMessage(L"Initial State") // Default commit message for the root node
     // Root node's 'changeFromParent' is default initialized (empty).
     // 'parent' weak_ptr is default initialized (expired).
     // 'children' vector is default initialized (empty).
@@ -10,10 +11,11 @@ HistoryNode::HistoryNode()
 }
 
 // Constructor for subsequent nodes
-HistoryNode::HistoryNode(std::weak_ptr<HistoryNode> parentNode, const TextChange& change)
+HistoryNode::HistoryNode(std::weak_ptr<HistoryNode> parentNode, const TextChange& change, const std::wstring& message)
     : parent(parentNode),
     changeFromParent(change),
-    timestamp(std::chrono::system_clock::now())
+    timestamp(std::chrono::system_clock::now()),
+	commitMessage(message) 
 {
 }
 

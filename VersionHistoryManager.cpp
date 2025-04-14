@@ -1,5 +1,7 @@
 #include "VersionHistoryManager.h"
 #include <Windows.h>
+#include <stack>
+
 
 // --- Helper Function: Apply Change ---
 
@@ -43,14 +45,14 @@ VersionHistoryManager::VersionHistoryManager(const std::wstring& initialContent)
 
 // --- Core Recording Method ---
 
-void VersionHistoryManager::recordChange(const TextChange& change) {
+void VersionHistoryManager::recordChange(const TextChange& change, const std::wstring&message) {
     // Avoid recording changes that result in no actual text difference.
     if (change.insertedText.empty() && change.deletedText.empty()) {
         return;
     }
 
     // Create a new node representing the state *after* the change.
-    auto newNode = std::make_shared<HistoryNode>(currentNode, change);
+    auto newNode = std::make_shared<HistoryNode>(currentNode, change, message);
 
     // Add the new node as a child of the current node.
     currentNode->children.push_back(newNode);
@@ -127,6 +129,8 @@ bool VersionHistoryManager::moveCurrentNodeToChild(size_t childIndex) {
         currentNode = currentNode->children[targetIndex];
         return true;
     }
+
+    OutputDebugStringW(L"VersionHistoryManager::moveCurrentNodeToChild: Provided childIndex out of bounds.\n");
     return false;
 }
 
@@ -264,10 +268,11 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
         for (const auto& child : node->children) {
             if (child /* && visited.find(child) == visited.end() */) { // Check if child is valid
                 // Calculate child state based on parent state and the change
-                std::wstring childState = applyChangeToString(nodeState, child->changeFromParent);
-                // Add child to queue and cache its state *before* potentially visiting it
-                stateCache[child] = childState;
-                q.push(child);
+                if (stateCache.find(child) == stateCache.end()) {
+                    std::wstring childState = applyChangeToString(nodeState, child->changeFromParent);
+                    stateCache[child] = childState;
+                    q.push(child);
+                }
                 // visited.insert(child); // Only needed if cycles are possible
             }
         }

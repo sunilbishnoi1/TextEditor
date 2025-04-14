@@ -18,6 +18,7 @@ public:
     std::weak_ptr<HistoryNode> parent; // Use weak_ptr to avoid ownership cycles
     std::vector<std::shared_ptr<HistoryNode>> children; // Owns the child nodes
     std::chrono::system_clock::time_point timestamp;
+    std::wstring commitMessage;
     // Note: Full text state is not stored here to save memory.
 
     // --- Constructors ---
@@ -25,7 +26,7 @@ public:
     HistoryNode();
 
     // Constructor for subsequent nodes based on a change from a parent
-    HistoryNode(std::weak_ptr<HistoryNode> parentNode, const TextChange& change);
+    HistoryNode(std::weak_ptr<HistoryNode> parentNode, const TextChange& change, const std::wstring& message = L"");
 
     // --- Methods ---
     bool isRoot() const; // Checks if this node is the root

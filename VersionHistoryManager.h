@@ -35,7 +35,7 @@ public:
     VersionHistoryManager& operator=(VersionHistoryManager&&) = delete;
 
     // Core Recording Operation
-    void recordChange(const TextChange& change);
+    void recordChange(const TextChange& change, const std::wstring& message = L"");
 
     // Sets the internal current node pointer directly, Used after finding a matching state or navigating via history UI.
     void setCurrentNode(std::shared_ptr<HistoryNode> node);

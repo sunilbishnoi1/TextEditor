@@ -62,12 +62,18 @@ struct HistoryDialogParams {
     std::shared_ptr<const HistoryNode> nodeAtEditorState = nullptr;
 };
 
+// Structure to pass data to/from Commit Message Dialog
+struct CommitMessageParams {
+    std::wstring* pCommitMessage = nullptr; // Pointer to store the result
+};
+
 // Forward declarations
 ATOM                MyRegisterClass(HINSTANCE hInstance);
 bool                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    CommandPaletteProc(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK    CommitMessageDlgProc(HWND, UINT, WPARAM, LPARAM);
 void                CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath);
 void                SwitchToTab(int index);
 void                CloseTab(int index);
@@ -968,48 +974,67 @@ void PopulateHistoryTreeRecursive(HWND hTree,
 
     // 1. Create description string for the node
     std::wstring description;
+    std::wstring commitMsg = node->commitMessage; // Get the commit message
+
+    // Format timestamp (using existing fallback)
+    time_t tt = std::chrono::system_clock::to_time_t(node->timestamp);
+    tm local_tm;
+    localtime_s(&local_tm, &tt);
+    char timeBuffer[80];
+    strftime(timeBuffer, sizeof(timeBuffer), "%H:%M:%S", &local_tm); // Shorter time format for UI? %Y-%m-%d %H:%M:%S is long
+    std::string timestampStr(timeBuffer);
+    std::wstring wTimestampStr(timestampStr.begin(), timestampStr.end());
+
     if (node->isRoot()) {
-        description = L"Initial State";
+        description = L"[" + wTimestampStr + L"] " + commitMsg;
     }
     else {
-        // Format timestamp (example using C++20 chrono format, fallback needed for older compilers)
-        // This requires #include <format> and C++20
-        // std::string timestampStr = std::format("{:%Y-%m-%d %H:%M:%S}", node->timestamp); // C++20
-        // Fallback: Use older methods if C++20 format isn't available
-        time_t tt = std::chrono::system_clock::to_time_t(node->timestamp);
-        tm local_tm;
-        localtime_s(&local_tm, &tt); // Use secure version
-        char buffer[80];
-        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local_tm);
-        std::string timestampStr(buffer);
+        // Format: [Time] Commit Message (+Ins/-Del)
+        description = L"[" + wTimestampStr + L"]";
 
+        // Add commit message if present
+        if (!commitMsg.empty()) {
+            description += L" " + commitMsg;
+        }
+        else {
+            description += L" (Auto)"; // Indicate automatic commit if no message
+        }
 
         // Add change details
-        description = L"[" + std::wstring(timestampStr.begin(), timestampStr.end()) + L"] "
-            + L"Pos:" + std::to_wstring(node->changeFromParent.position)
-            + L" (+" + std::to_wstring(node->changeFromParent.insertedText.length())
+        description += L" (+" + std::to_wstring(node->changeFromParent.insertedText.length())
             + L" / -" + std::to_wstring(node->changeFromParent.deletedText.length())
             + L")";
-        // TODO: Could add the 'description' from RecordHistoryPoint if stored
     }
 
 
     // 2. Prepare TreeView item struct
     TVINSERTSTRUCT tvis = { 0 };
     tvis.hParent = hParentItem;
-    tvis.hInsertAfter = TVI_LAST; // Add children in order
-    tvis.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE; // Include state for selection/expansion
-    tvis.item.pszText = &description[0]; // Use pointer to string data
-    tvis.item.lParam = (LPARAM)node.get(); // Store RAW pointer in lParam for quick comparison (use map for safety)
-    tvis.item.state = 0;
-    tvis.item.stateMask = TVIS_SELECTED | TVIS_EXPANDED; // We care about these states
+    tvis.hInsertAfter = TVI_LAST;
+    tvis.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE;
+    // IMPORTANT: Need a persistent buffer for pszText if description is dynamically created locally.
+    // Easiest way is often to store the description string itself in the map or another structure associated with the item.
+    // For simplicity here, we'll risk using the local string pointer, assuming TreeView copies it immediately.
+    // A safer approach involves allocating memory or using TVITEMEX's callback mechanism.
+    // Let's try the simpler approach first:
+    std::vector<wchar_t> textBuffer(description.begin(), description.end());
+    textBuffer.push_back(L'\0'); // Null-terminate for pszText
+    tvis.item.pszText = textBuffer.data(); // Pointer to the buffer
 
-    // Check if this is the node matching the current editor state
+    tvis.item.lParam = (LPARAM)node.get(); // Raw pointer for map lookup
+    tvis.item.state = 0;
+    tvis.item.stateMask = TVIS_SELECTED | TVIS_EXPANDED;
+
     if (node == params->nodeAtEditorState) {
-        tvis.item.state = TVIS_SELECTED | TVIS_EXPANDED;
+        tvis.item.state |= TVIS_SELECTED | TVIS_EXPANDED; // Select and expand current
     }
-    else if (hParentItem == TVI_ROOT) { // Expand root by default
-        tvis.item.state = TVIS_EXPANDED;
+    else if (hParentItem == TVI_ROOT && node->children.empty()) {
+        // Maybe don't auto-expand root if it has no children? Or always expand root?
+        tvis.item.state |= TVIS_EXPANDED;
+    }
+    else if (node->children.empty() == false) {
+        // Optionally expand nodes that have children by default
+        // tvis.item.state |= TVIS_EXPANDED;
     }
 
 
@@ -1018,9 +1043,10 @@ void PopulateHistoryTreeRecursive(HWND hTree,
 
     // 4. Store mapping from HTREEITEM to shared_ptr
     if (hNewItem) {
-        params->treeItemNodeMap[hNewItem] = node; // Add to our safe map
+        // Store mapping from HTREEITEM to shared_ptr AND the description string buffer if needed for safety
+        params->treeItemNodeMap[hNewItem] = node;
         if (node == params->nodeAtEditorState) {
-            hCurrentItemTree = hNewItem; // Store the HTREEITEM if it's the current one
+            hCurrentItemTree = hNewItem;
         }
     }
 
@@ -1029,12 +1055,10 @@ void PopulateHistoryTreeRecursive(HWND hTree,
     for (const auto& child : node->children) {
         PopulateHistoryTreeRecursive(hTree, params, child, hNewItem, hCurrentItemTree);
     }
-    // Reverse order (newest child first under parent):
-    /*
-    for (auto it = node->children.rbegin(); it != node->children.rend(); ++it) {
-        PopulateHistoryTreeRecursive(hTree, params, *it, hNewItem, hCurrentItemTree);
+    // Ensure the current node is visible AFTER all items are inserted
+    if (hParentItem == TVI_ROOT && hCurrentItemTree) {
+        TreeView_EnsureVisible(hTree, hCurrentItemTree);
     }
-    */
 }
 
 //---------------------------------------------------------------------------
@@ -1244,6 +1268,85 @@ void ShowHistoryTree(HWND hWnd) {
 }
 
 
+//---------------------------------------------------------------------------
+// CommitMessageDlgProc - Dialog Procedure for getting the commit message
+//---------------------------------------------------------------------------
+INT_PTR CALLBACK CommitMessageDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    CommitMessageParams* pParams = nullptr;
+
+    // Retrieve params pointer stored during WM_INITDIALOG
+    if (message != WM_INITDIALOG) {
+        pParams = reinterpret_cast<CommitMessageParams*>(GetWindowLongPtr(hDlg, DWLP_USER));
+    }
+
+    switch (message) {
+    case WM_INITDIALOG:
+    {
+        // Retrieve parameters passed from DialogBoxParam
+        pParams = reinterpret_cast<CommitMessageParams*>(lParam);
+        if (!pParams || !pParams->pCommitMessage) {
+            EndDialog(hDlg, IDCANCEL); // Cannot proceed without params
+            return (INT_PTR)FALSE;
+        }
+        // Store params pointer for later use
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)pParams);
+
+        // Set initial focus to the edit control
+        HWND hEdit = GetDlgItem(hDlg, IDC_COMMIT_MESSAGE_EDIT);
+        if (hEdit) {
+            SetFocus(hEdit);
+        }
+        return (INT_PTR)FALSE; // We set the focus manually
+    }
+
+    case WM_COMMAND:
+    {
+        if (!pParams) break; // Should have params
+
+        int wmId = LOWORD(wParam);
+        switch (wmId) {
+        case IDOK:
+        {
+            HWND hEdit = GetDlgItem(hDlg, IDC_COMMIT_MESSAGE_EDIT);
+            if (hEdit) {
+                int textLen = GetWindowTextLengthW(hEdit);
+                if (textLen > 0) {
+                    // Ensure the target string has enough capacity
+                    pParams->pCommitMessage->resize(textLen + 1); // +1 for safety, resize later
+                    GetWindowTextW(hEdit, &(*pParams->pCommitMessage)[0], textLen + 1);
+                    pParams->pCommitMessage->resize(textLen); // Trim null terminator
+                }
+                else {
+                    // User clicked OK without entering text, clear the target string
+                    pParams->pCommitMessage->clear();
+                }
+            }
+            else {
+                // Edit control not found? Clear the message.
+                pParams->pCommitMessage->clear();
+            }
+            EndDialog(hDlg, IDOK);
+            return (INT_PTR)TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return (INT_PTR)TRUE;
+        }
+    }
+    break; // End WM_COMMAND
+
+    case WM_CLOSE: // Handle closing via 'X' button
+        EndDialog(hDlg, IDCANCEL);
+        return (INT_PTR)TRUE;
+
+    case WM_DESTROY:
+        // Clean up params pointer stored in window long ptr
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)nullptr);
+        break;
+    }
+    return (INT_PTR)FALSE; // Default processing
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -1311,7 +1414,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             else {
                 // Timer fired but no changes, or wrong timer ID - just kill it
                 KillTimer(hWnd, timerId);
-                if (reinterpret_cast<UINT_PTR>(tab.hEdit) == timerId) {
+                if (tab.idleTimerId!=0 && reinterpret_cast<UINT_PTR>(tab.hEdit) == timerId) {
                     tab.idleTimerId = 0; // Mark as inactive
                 }
             }
@@ -1464,18 +1567,105 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         //        }
         //    }
         //    break;
-        //case ID_EDIT_REDO:
-        //    if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
-        //        // TODO: If branching, potentially ask user which branch via getRedoBranchDescriptions()
-        //        // For now, redo the default (last) branch
-        //        auto forwardChangeOpt = openTabs[currentTab].historyManager->redo(); // Default index
-        //        if (forwardChangeOpt) {
-        //            ApplyChangeToRichEdit(openTabs[currentTab].hEdit, *forwardChangeOpt);
-        //            // Update textBeforeChange after applying undo/redo
-        //            openTabs[currentTab].textBeforeChange = GetRichEditText(openTabs[currentTab].hEdit);
-        //        }
-        //    }
-        //    break;
+        // Inside WndProc -> WM_COMMAND
+        case ID_EDIT_REDO:
+            if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
+                auto& tab = openTabs[currentTab]; // Get reference to the current tab info
+                auto& historyManager = tab.historyManager;
+
+                // --- Check if redo is possible ---
+                if (historyManager->canRedo()) { //
+                    std::vector<std::wstring> branches = historyManager->getRedoBranchDescriptions(); //
+
+                    // --- Check for branching ---
+                    if (branches.size() > 1) {
+                        // --- More than one redo path: Show Popup Menu ---
+                        HMENU hPopup = CreatePopupMenu();
+                        if (!hPopup) {
+                            MessageBoxW(hWnd, L"Failed to create redo menu.", L"Error", MB_OK | MB_ICONERROR);
+                            break; // Exit command handling
+                        }
+
+                        // Populate the menu with branch descriptions
+                        for (size_t i = 0; i < branches.size(); ++i) {
+                            AppendMenuW(hPopup, MF_STRING, ID_REDO_BRANCH_BASE + i, branches[i].c_str());
+                        }
+
+                        // Get cursor position to display the menu
+                        POINT pt;
+                        GetCursorPos(&pt); // Get cursor position in screen coordinates
+
+                        // Display the popup menu and wait for user selection
+                        // TPM_RETURNCMD makes TrackPopupMenu return the selected command ID
+                        int selectedBranchCmd = TrackPopupMenu(hPopup,
+                            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                            pt.x, pt.y, 0, hWnd, NULL);
+
+                        DestroyMenu(hPopup); // Clean up the menu
+
+                        if (selectedBranchCmd != 0) {
+                            // User selected a branch
+                            int selectedIndex = selectedBranchCmd - ID_REDO_BRANCH_BASE; // Convert command ID back to index
+
+                            // Validate the index just in case
+                            if (selectedIndex >= 0 && selectedIndex < branches.size()) {
+                                // Move to the selected child node internally
+                                if (historyManager->moveCurrentNodeToChild(selectedIndex)) { //
+                                    // Reconstruct the state of the *new* current node
+                                    std::shared_ptr<const HistoryNode> newNode = historyManager->getCurrentNode(); //
+                                    std::wstring newState = historyManager->getCurrentState(); // Or reconstructStateToNode(newNode)
+
+                                    // Update the Rich Edit control
+                                    SetRichEditText(tab.hEdit, newState, newNode); //
+
+                                    // Update tab state
+                                    tab.textAtLastHistoryPoint = newState; //
+                                    tab.changesSinceLastHistoryPoint = false; //
+                                    // Determine modification status based on whether newState matches the saved state
+                                    // tab.isModified = ... (compare newState with saved state if tracked)
+                                    UpdateTabTitle(currentTab); //
+                                    UpdateWindowTitle(hWnd); //
+                                }
+                                else {
+                                    MessageBoxW(hWnd, L"Failed to move to selected redo branch.", L"Error", MB_OK | MB_ICONERROR);
+                                }
+                            }
+                            else {
+                                MessageBoxW(hWnd, L"Invalid redo branch selected.", L"Error", MB_OK | MB_ICONERROR);
+                            }
+                        }
+                        // If selectedBranchCmd is 0, the user dismissed the menu - do nothing further.
+
+                    }
+                    else {
+                        // --- Only one (or zero, though canRedo check prevents zero) redo path: Standard Redo ---
+                        // Use moveCurrentNodeToChild with default behavior (moves to the first/only child)
+                        if (historyManager->moveCurrentNodeToChild()) { // Use default index behavior
+                            // Reconstruct the state of the *new* current node
+                            std::shared_ptr<const HistoryNode> newNode = historyManager->getCurrentNode(); //
+                            std::wstring newState = historyManager->getCurrentState(); // Or reconstructStateToNode(newNode)
+
+
+                            // Update the Rich Edit control
+                            SetRichEditText(tab.hEdit, newState, newNode); //
+
+
+                            // Update tab state
+                            tab.textAtLastHistoryPoint = newState; //
+                            tab.changesSinceLastHistoryPoint = false; //
+                            // tab.isModified = ...
+                            UpdateTabTitle(currentTab); //
+                            UpdateWindowTitle(hWnd); //
+                        }
+                        else {
+                            // Should not happen if canRedo was true and branches.size() <= 1
+                            OutputDebugStringW(L"Warning: moveCurrentNodeToChild failed unexpectedly in single-branch redo.\n");
+                        }
+                    }
+                }
+                // else: Cannot redo (canRedo() returned false) - do nothing or provide feedback
+            }
+            break; // End ID_EDIT_REDO
         case ID_VIEW_HISTORY:
             if (currentTab >= 0) {
                 SyncHistoryManagerToEditor(hWnd, currentTab); // 
@@ -1483,16 +1673,61 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
             break;
 
-            // command for manual snapshot
-        case ID_EDIT_CREATE_VERSION: 
-            if (currentTab >= 0) {
-                // Optional: Sync first? Might not be needed if user explicitly requests snapshot of current state.
-                // SyncHistoryManagerToEditor(hWnd, currentTab);
-                RecordHistoryPoint(hWnd, currentTab, L"Manual Snapshot");
-                // Give user feedback? Maybe status bar message.
-                MessageBoxW(hWnd, L"Created manual version snapshot.", L"History", MB_OK | MB_ICONINFORMATION);
+            // command for manual commit
+        case ID_EDIT_CREATE_VERSION:
+            if (currentTab >= 0 && currentTab < openTabs.size()) {
+                auto& tab = openTabs[currentTab];
+                if (tab.hEdit && tab.historyManager) {
+                    // --- Get Commit Message ---
+                    std::wstring userCommitMessage = L""; // Default to empty
+                    CommitMessageParams params;
+                    params.pCommitMessage = &userCommitMessage;
+
+                    // Show the commit message dialog
+                    INT_PTR dlgResult = DialogBoxParam(
+                        hInst,
+                        MAKEINTRESOURCE(IDD_COMMIT_MESSAGE),
+                        hWnd, // Parent window
+                        CommitMessageDlgProc,
+                        (LPARAM)&params
+                    );
+
+                    if (dlgResult == IDOK) {
+                        // --- User confirmed, proceed with creating version ---
+
+                        // 1. Get current state
+                        std::wstring currentState = GetRichEditText(tab.hEdit);
+
+                        // 2. Check if state actually changed since last *recorded* point
+                        if (currentState == tab.textAtLastHistoryPoint) {
+                            MessageBoxW(hWnd, L"No changes detected since the last version point.\nManual version not created.", L"Create Version", MB_OK | MB_ICONINFORMATION);
+                            break; // Exit case
+                        }
+
+                        // 3. Calculate the change from the last recorded state
+                        TextChange change = CalculateTextChange(tab.textAtLastHistoryPoint, currentState, tab.hEdit);
+
+                        // 4. Ensure the change is not empty (double check)
+                        if (change.insertedText.empty() && change.deletedText.empty()) {
+                            MessageBoxW(hWnd, L"Internal check: No changes detected.\nManual version not created.", L"Create Version", MB_OK | MB_ICONWARNING);
+                            break; // Exit case
+                        }
+
+                        // 5. Record the change WITH the user's message
+                        // If user entered no message, userCommitMessage will be empty, which is fine.
+                        tab.historyManager->recordChange(change, userCommitMessage);
+
+                        // 6. Update the baseline for the next diff
+                        tab.textAtLastHistoryPoint = currentState;
+                        tab.changesSinceLastHistoryPoint = false; // Reset flag
+
+                        // 7. Provide feedback
+                        MessageBoxW(hWnd, (L"Version created." + (userCommitMessage.empty() ? L"" : L"\nMessage: " + userCommitMessage)).c_str(), L"History", MB_OK | MB_ICONINFORMATION);
+                    }
+                    // else: User cancelled (dlgResult == IDCANCEL or error), do nothing.
+                }
             }
-            break;
+            break; // End ID_EDIT_CREATE_VERSION
 
             // --- THEME ---
         case IDM_THEME_LIGHT: /* ... */ break;
