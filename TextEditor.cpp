@@ -19,6 +19,7 @@
 #pragma comment(lib, "comctl32.lib")
 
 #define WM_POST_APPLY_CHANGE (WM_USER + 100)
+#define IDLE_HISTORY_TIMEOUT_MS 4000
 
 
 // Global Variables:
@@ -27,6 +28,7 @@ WCHAR szTitle[MAX_LOADSTRING];
 WCHAR szWindowClass[MAX_LOADSTRING];
 HWND hTabCtrl;
 HWND hToolBar;
+HWND g_hWnd = NULL;
 
 struct EditorTabInfo {
     HWND hEdit = NULL;
@@ -36,10 +38,29 @@ struct EditorTabInfo {
     bool isModified = false; // Track modification status
     // Store the text state *before* the current change for diffing
     std::wstring textBeforeChange = L"";
-    bool processingChange = false; // Flag to prevent re-entrancy during change handling
+    //bool processingChange = false; // Flag to prevent re-entrancy during change handling
+
+	UINT_PTR idleTimerId = 0; // Timer ID for idle state
+    bool changesSinceLastHistoryPoint = false; //Tracks if modification occurred
+    //Optimization: Store the text state of the *last recorded history point*
+    //This avoids reconstructing from root to calculate the next diff.
+	std::wstring textAtLastHistoryPoint = L"";
+     bool processingHistoryAction = false; // 
 };
 std::vector<EditorTabInfo> openTabs;
 int currentTab = -1;
+
+// Structure to pass data to the History Dialog Procedure
+struct HistoryDialogParams {
+    VersionHistoryManager* historyManager = nullptr;
+    int tabIndex = -1; // To access openTabs[tabIndex] if needed
+    HWND hParent = NULL; // Main window handle
+    // Map to associate TreeView items with their corresponding HistoryNode shared_ptrs
+    // This is safer than storing pointers directly in lParam.
+    std::map<HTREEITEM, std::shared_ptr<const HistoryNode>> treeItemNodeMap;
+    // Store the node that corresponds to the state currently shown in the editor when the dialog opened
+    std::shared_ptr<const HistoryNode> nodeAtEditorState = nullptr;
+};
 
 // Forward declarations
 ATOM                MyRegisterClass(HINSTANCE hInstance);
@@ -98,11 +119,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     if (!InitInstance(hInstance, nCmdShow))
         return FALSE;
 
-    MSG msg;
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_TEXTEDITOR));
+    MSG msg;
 
     while (GetMessage(&msg, nullptr, 0, 0)) {
-        if (!TranslateAccelerator(msg.hwnd, hAccelTable, &msg)) {
+        if (!TranslateAccelerator(g_hWnd, hAccelTable, &msg)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
@@ -121,7 +142,7 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     wcex.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_TEXTEDITOR));
     wcex.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wcex.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wcex.lpszMenuName = nullptr; // No main menu bar
+	wcex.lpszMenuName = MAKEINTRESOURCE(IDC_TEXTEDITOR); //load menu from resource
     wcex.lpszClassName = szWindowClass;
     wcex.hIconSm = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
 
@@ -131,14 +152,14 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 bool InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
     hInst = hInstance;
-    HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
+    g_hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, 0, CW_USEDEFAULT, CW_USEDEFAULT, nullptr, nullptr, hInstance, nullptr); // Use CW_USEDEFAULT for size
 
-    if (!hWnd)
+    if (!g_hWnd)
         return FALSE;
 
-    ShowWindow(hWnd, nCmdShow);
-    UpdateWindow(hWnd);
+    ShowWindow(g_hWnd, nCmdShow);
+    UpdateWindow(g_hWnd);
 
     return TRUE;
 }
@@ -150,37 +171,37 @@ void CreateToolbar(HWND hWnd)
         WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_TOP, 
         0, 0, 0, 0, hWnd, (HMENU)IDC_TOOLBAR, hInst, NULL);
 
-    // Add buttons - Using TBSTYLE_DROPDOWN for menus
-    TBBUTTON tbb[4];
-    ZeroMemory(tbb, sizeof(tbb));
+    //// Add buttons - Using TBSTYLE_DROPDOWN for menus
+    //TBBUTTON tbb[4];
+    //ZeroMemory(tbb, sizeof(tbb));
 
-    // File dropdown
-    tbb[0].idCommand = ID_FILE_NEW; // Use ID_FILE_NEW as placeholder ID for the button itself
-    tbb[0].fsState = TBSTATE_ENABLED;
-    tbb[0].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
-    tbb[0].iString = (INT_PTR)L"File";
+    //// File dropdown
+    //tbb[0].idCommand = ID_FILE_NEW; // Use ID_FILE_NEW as placeholder ID for the button itself
+    //tbb[0].fsState = TBSTATE_ENABLED;
+    //tbb[0].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
+    //tbb[0].iString = (INT_PTR)L"File";
 
-    // Theme dropdown
-    tbb[1].idCommand = IDM_THEME_MENU;
-    tbb[1].fsState = TBSTATE_ENABLED;
-    tbb[1].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
-    tbb[1].iString = (INT_PTR)L"Theme";
+    //// Theme dropdown
+    //tbb[1].idCommand = IDM_THEME_MENU;
+    //tbb[1].fsState = TBSTATE_ENABLED;
+    //tbb[1].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
+    //tbb[1].iString = (INT_PTR)L"Theme";
 
-    // Help dropdown
-    tbb[2].idCommand = IDM_ABOUT; // Placeholder ID
-    tbb[2].fsState = TBSTATE_ENABLED;
-    tbb[2].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
-    tbb[2].iString = (INT_PTR)L"Help";
+    //// Help dropdown
+    //tbb[2].idCommand = IDM_ABOUT; // Placeholder ID
+    //tbb[2].fsState = TBSTATE_ENABLED;
+    //tbb[2].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
+    //tbb[2].iString = (INT_PTR)L"Help";
 
-    //EDIT dropdown
-    tbb[3].idCommand = ID_EDIT_UNDO; // Placeholder ID for the button itself
-    tbb[3].fsState = TBSTATE_ENABLED;
-    tbb[3].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN;
-    tbb[3].iString = (INT_PTR)L"Edit";
+    ////EDIT dropdown
+    //tbb[3].idCommand = ID_EDIT_UNDO; // Placeholder ID for the button itself
+    //tbb[3].fsState = TBSTATE_ENABLED;
+    //tbb[3].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN;
+    //tbb[3].iString = (INT_PTR)L"Edit";
 
-    SendMessage(hToolBar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
-    SendMessage(hToolBar, TB_ADDBUTTONS, (WPARAM)4, (LPARAM)&tbb);
-    SendMessage(hToolBar, TB_AUTOSIZE, 0, 0);
+    //SendMessage(hToolBar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
+    //SendMessage(hToolBar, TB_ADDBUTTONS, (WPARAM)4, (LPARAM)&tbb);
+    /*SendMessage(hToolBar, TB_AUTOSIZE, 0, 0);*/  //this might need later
 }
 
 void CreateTabControl(HWND hWnd)
@@ -212,7 +233,7 @@ HWND CreateRichEdit(HWND hWnd)
     // Set custom font (e.g., Consolas 10pt)
     LOGFONT lf = { 0 };
     wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Consolas");
-    lf.lfHeight = -MulDiv(10, GetDeviceCaps(GetDC(hEdit), LOGPIXELSY), 72); // 10pt
+    lf.lfHeight = -MulDiv(10, GetDeviceCaps(GetDC(hEdit), LOGPIXELSY), 50); //font size
     lf.lfWeight = FW_NORMAL;
     lf.lfCharSet = DEFAULT_CHARSET;
     lf.lfOutPrecision = OUT_DEFAULT_PRECIS;
@@ -335,6 +356,66 @@ TextChange CalculateTextChange(const std::wstring& before, const std::wstring& a
     return TextChange(firstDiff, insertedText, deletedText, cursorPosAfter);
 }
 
+//Helper to set text, clear RichEdit undo, and manage flags Pass the targetNode to restore cursor position accurately.
+void SetRichEditText(HWND hEdit, const std::wstring& text, std::shared_ptr<const HistoryNode> targetNode = nullptr) {
+    if (!hEdit) return;
+
+    // Find the tab associated with this hEdit
+    int tabIndex = -1;
+    for (int i = 0; i < openTabs.size(); ++i) {
+        if (openTabs[i].hEdit == hEdit) {
+            tabIndex = i;
+            break;
+        }
+    }
+    if (tabIndex == -1) return; // Should not happen
+
+    auto& tab = openTabs[tabIndex];
+    tab.processingHistoryAction = true; // Set flag BEFORE changing text
+
+    // Store old selection *if needed* (usually not when jumping history)
+    // CHARRANGE oldSel; SendMessage(hEdit, EM_EXGETSEL, 0, (LPARAM)&oldSel);
+
+    SetWindowTextW(hEdit, text.c_str());
+
+    // --- CRUCIAL: Clear Rich Edit's internal undo buffer ---
+    // This prevents conflicts when jumping to an arbitrary history state.
+    SendMessage(hEdit, EM_EMPTYUNDOBUFFER, 0, 0);
+
+    // Restore cursor position based on the target node's info
+    CHARRANGE newSel = { 0, 0 }; // Default to start
+    if (targetNode && !targetNode->isRoot() && targetNode->changeFromParent.cursorPositionAfter != (size_t)-1) {
+        // Use the position stored *after* the change that LED to this node was applied
+        newSel.cpMin = newSel.cpMax = (LONG)targetNode->changeFromParent.cursorPositionAfter;
+
+        // Boundary check: ensure cursor position is within the new text length
+        GETTEXTLENGTHEX gtl = { GTL_DEFAULT, CP_ACP }; // Use default code page
+        LRESULT textLen = SendMessageW(hEdit, EM_GETTEXTLENGTHEX, (WPARAM)&gtl, 0);
+        if (textLen >= 0 && newSel.cpMin > textLen) {
+            newSel.cpMin = newSel.cpMax = (LONG)textLen; // Move to end if out of bounds
+        }
+        else if (textLen < 0) {
+            // Error getting length, default to 0,0
+            newSel.cpMin = newSel.cpMax = 0;
+        }
+
+    }
+    else {
+        // Root node or no cursor info, default to start of document
+        newSel.cpMin = newSel.cpMax = 0;
+    }
+    SendMessage(hEdit, EM_EXSETSEL, 0, (LPARAM)&newSel);
+
+
+    // Mark control as unmodified (since it now matches a specific history state)
+    // Note: tab.isModified should be updated based on whether this state matches the saved state on disk.
+    SendMessage(hEdit, EM_SETMODIFY, FALSE, 0);
+
+    // Post message to clear the processing flag *after* potential EN_CHANGE
+    PostMessage(GetParent(hEdit), WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
+}
+
+
 void UpdateWindowTitle(HWND hWnd) {
     std::wstring title = L"TextEditor";
     if (currentTab >= 0 && currentTab < openTabs.size()) {
@@ -383,8 +464,28 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
 
     // --- Create and store VersionHistoryManager ---
     newTab.historyManager = std::make_unique<VersionHistoryManager>(initialContent);
-    newTab.textBeforeChange = initialContent; // Store initial state for first diff
+    // Initialize the baseline text for the *first* diff calculation
+    newTab.textAtLastHistoryPoint = initialContent;
+    newTab.textBeforeChange = initialContent; // Also init this
+    newTab.changesSinceLastHistoryPoint = false; // No changes initially
+    newTab.processingHistoryAction = false; // Not processing initially
     // --- End HistoryManager creation ---
+
+    // --- Add Idle Timer Setup ---
+    // Start timer only if creation succeeded
+    if (newTab.historyManager && newTab.hEdit) {
+        // Use the hEdit HWND cast to UINT_PTR as a unique ID for the timer associated with this tab
+        UINT_PTR timerIdentifier = reinterpret_cast<UINT_PTR>(newTab.hEdit);
+        // Note: Timer is initially set here but will be reset on first change.
+        // You could skip setting it here and only set it in EN_CHANGE,
+        // but setting it ensures idleTimerId is initialized (though to 0 is also fine).
+        // Setting it here might cause an immediate WM_TIMER if app is idle after tab creation.
+        // Let's initialize ID to 0 and let EN_CHANGE create the first timer.
+        newTab.idleTimerId = 0; // Mark as inactive initially
+    }
+    // --- End Timer Setup ---
+
+
 
     // Add tab to UI
     TCITEM tie;
@@ -397,6 +498,11 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
         MessageBox(hWnd, L"Failed to create tab.", L"Error", MB_OK | MB_ICONERROR);
         return;
     }
+
+    // Ensure editor is set AFTER history manager is initialized
+    SetWindowTextW(hEdit, initialContent.c_str()); // Set initial text
+    SendMessage(hEdit, EM_SETMODIFY, FALSE, 0); // Mark as unmodified
+    SendMessage(hEdit, EM_EMPTYUNDOBUFFER, 0, 0); // Clear default buffer after setting tex
 
     openTabs.push_back(std::move(newTab)); // Add the info struct
 
@@ -446,6 +552,12 @@ void CloseTab(int index)
         }
         // If IDNO, continue closing without saving
     }
+    // --- Add Timer Cleanup ---
+    if (openTabs[index].idleTimerId != 0) {
+        KillTimer(GetParent(hTabCtrl), reinterpret_cast<UINT_PTR>(openTabs[index].hEdit));
+        openTabs[index].idleTimerId = 0;
+    }
+    // --- End Timer Cleanup ---
 
     // HistoryManager unique_ptr cleans itself up when struct is erased
     DestroyWindow(openTabs[index].hEdit);
@@ -460,7 +572,7 @@ void CloseTab(int index)
         // If we closed the active tab
         if (openTabs.empty()) {
             // Close Text Editor if it was the last tab
-            DestroyWindow(openTabs[index].hEdit);
+            /*DestroyWindow(openTabs[index].hEdit);*/
         }
         else {
             // Select the previous or first tab
@@ -492,32 +604,74 @@ void ResizeControls(HWND hWnd)
 {
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
-    RECT rcToolBar;
-    int toolbarHeight = 0;
-    if (GetWindowRect(hToolBar, &rcToolBar)) {
-        toolbarHeight = rcToolBar.bottom - rcToolBar.top;
+
+
+ //   /*RECT rcToolBar;
+ //   int toolbarHeight = 0;
+ //   if (GetWindowRect(hToolBar, &rcToolBar)) {
+ //       toolbarHeight = rcToolBar.bottom - rcToolBar.top;
+ //   }*/
+	//int toolbarHeight = 40; // adjust as needed, 28 pixels
+
+
+	int tabHeight = 22; // adjust as needed
+
+    HDWP hdwp = BeginDeferWindowPos(2); // Toolbar + TabControl + Editors
+
+    /*if (hdwp) hdwp = DeferWindowPos(hdwp, hToolBar, NULL, 0, 0, rcClient.right, toolbarHeight, SWP_NOZORDER | SWP_NOACTIVATE);*/
+    if (hdwp) {
+        hdwp = DeferWindowPos(hdwp, hTabCtrl, NULL, 0, 0, rcClient.right, tabHeight,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
-    int tabHeight = 15; //
-
-    HDWP hdwp = BeginDeferWindowPos(2 + openTabs.size()); // Toolbar + TabControl + Editors
-
-    if (hdwp) hdwp = DeferWindowPos(hdwp, hToolBar, NULL, 0, 0, rcClient.right, toolbarHeight, SWP_NOZORDER | SWP_NOACTIVATE);
-    if (hdwp) hdwp = DeferWindowPos(hdwp, hTabCtrl, NULL, 0, toolbarHeight, rcClient.right, tabHeight, SWP_NOZORDER | SWP_NOACTIVATE);
+    else {
+        SetWindowPos(hTabCtrl, NULL, 0, 0, rcClient.right, tabHeight,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
 
     RECT rcEditor;
     rcEditor.left = 0;
-    rcEditor.top = toolbarHeight + tabHeight;
+    rcEditor.top = tabHeight;
     rcEditor.right = rcClient.right;
     rcEditor.bottom = rcClient.bottom;
 
+    HWND hActiveEdit = NULL; // Keep track of the active editor handle
     if (currentTab >= 0 && currentTab < static_cast<int>(openTabs.size())) {
-        if (hdwp) hdwp = DeferWindowPos(hdwp, openTabs[currentTab].hEdit, NULL,
-            rcEditor.left, rcEditor.top,
-            rcEditor.right - rcEditor.left,
-            rcEditor.bottom - rcEditor.top,
-            SWP_NOZORDER | SWP_NOACTIVATE);
+        hActiveEdit = openTabs[currentTab].hEdit;
+        if (hActiveEdit) {
+            if (hdwp) {
+                hdwp = DeferWindowPos(hdwp, hActiveEdit, NULL, rcEditor.left, rcEditor.top,
+                    rcEditor.right - rcEditor.left, rcEditor.bottom - rcEditor.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+            else {
+                SetWindowPos(hActiveEdit, NULL, rcEditor.left, rcEditor.top,
+                    rcEditor.right - rcEditor.left, rcEditor.bottom - rcEditor.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+        }
+        else {
+            OutputDebugStringW(L"ResizeControls: Active editor handle is NULL!\n");
+        }
     }
     if (hdwp) EndDeferWindowPos(hdwp);
+
+    // Check if we have a valid handle for the active editor
+    if (hActiveEdit) {
+        int margin = 15; // Adjust this value 
+
+        // Get the client rectangle of the editor *after* it has been resized
+        RECT rcFormat;
+        GetClientRect(hActiveEdit, &rcFormat);
+
+        // Inset the rectangle by the margin amount
+        rcFormat.left += margin;
+        rcFormat.top += margin;  
+        rcFormat.right -= margin;
+        rcFormat.bottom -= margin;
+
+        // Set the formatting rectangle within the Rich Edit control
+        SendMessage(hActiveEdit, EM_SETRECT, 0, (LPARAM)&rcFormat);
+    }
 }
 
 
@@ -527,64 +681,65 @@ void ShowCommandPalette(HWND hWnd)
 }
 
 //this function isn't really needed as we already had created Menu in .rc file, but I have added it for future use
-void ShowPopupMenu(HWND hWnd, int buttonId, int x, int y)
-{
-    //HMENU hMenu = LoadMenu(hInst, MAKEINTRESOURCE(IDC_TEXTEDITOR)); // Load base menu resource (if defined)
-    HMENU hMenu = CreateMenu(); // Simpler to always create dynamically
-    HMENU hSubMenu = NULL;
-
-    switch (buttonId) {
-    case ID_FILE_NEW: // Assuming ID_FILE_NEW is the command ID of the "File" toolbar button
-        hSubMenu = CreatePopupMenu();
-        AppendMenu(hSubMenu, MF_STRING, ID_FILE_NEW, L"&New\tCtrl+T");
-        AppendMenu(hSubMenu, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
-        AppendMenu(hSubMenu, MF_STRING, ID_FILE_SAVE, L"&Save\tCtrl+S");
-        AppendMenu(hSubMenu, MF_STRING, ID_FILE_SAVEAS, L"Save &As...");
-        AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hSubMenu, MF_STRING, ID_CLOSE_TAB, L"&Close Tab\tCtrl+W");
-        AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenu(hSubMenu, MF_STRING, IDM_EXIT, L"E&xit");
-        break;
-
-    case IDM_THEME_MENU: // Command ID for the "Theme" button
-        hSubMenu = CreatePopupMenu();
-        // TODO: Add check marks based on current theme
-        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_LIGHT, L"&Light");
-        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_DARK, L"&Dark");
-        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_SYSTEM, L"&System Default");
-        break;
-
-    case IDM_ABOUT: // Command ID for the "Help" button
-        hSubMenu = CreatePopupMenu();
-        AppendMenu(hSubMenu, MF_STRING, IDM_ABOUT, L"&About TextEditor...");
-        // Add other help items if needed
-        break;
-
-    case ID_EDIT_UNDO: // "Edit" button ID
-        hSubMenu = CreatePopupMenu();
-        // Check if undo/redo is possible for the current tab
-        bool canUndo = false;
-        bool canRedo = false;
-        if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
-            canUndo = openTabs[currentTab].historyManager->canUndo();
-            canRedo = openTabs[currentTab].historyManager->canRedo();
-        }
-        AppendMenuW(hSubMenu, MF_STRING | (canUndo ? MF_ENABLED : MF_GRAYED), ID_EDIT_UNDO, L"&Undo\tCtrl+Z");
-        AppendMenuW(hSubMenu, MF_STRING | (canRedo ? MF_ENABLED : MF_GRAYED), ID_EDIT_REDO, L"&Redo\tCtrl+Y");
-        AppendMenuW(hSubMenu, MF_SEPARATOR, 0, NULL);
-        AppendMenuW(hSubMenu, MF_STRING, ID_VIEW_HISTORY, L"View &History...\tF5"); // Add History View option
-        // Add Cut, Copy, Paste later if needed (using EM_CUT, EM_COPY, EM_PASTE)
-        break;
-    }
-
-    if (hSubMenu) {
-        // Ensure menu appears correctly relative to the button
-        TrackPopupMenu(hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, x, y, 0, hWnd, NULL);
-        DestroyMenu(hSubMenu); // Destroy the dynamically created popup menu
-    }
-
-    if (hMenu) DestroyMenu(hMenu); // Destroy the base menu if loaded/created
-}
+//void ShowPopupMenu(HWND hWnd, int buttonId, int x, int y)
+//{
+//    //HMENU hMenu = LoadMenu(hInst, MAKEINTRESOURCE(IDC_TEXTEDITOR)); // Load base menu resource (if defined)
+//    HMENU hMenu = CreateMenu(); // Simpler to always create dynamically
+//    HMENU hSubMenu = NULL;
+//
+//    switch (buttonId) {
+//    case ID_FILE_NEW: // Assuming ID_FILE_NEW is the command ID of the "File" toolbar button
+//        hSubMenu = CreatePopupMenu();
+//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_NEW, L"&New\tCtrl+T");
+//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
+//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_SAVE, L"&Save\tCtrl+S");
+//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_SAVEAS, L"Save &As...");
+//        AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
+//        AppendMenu(hSubMenu, MF_STRING, ID_CLOSE_TAB, L"&Close Tab\tCtrl+W");
+//        AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
+//        AppendMenu(hSubMenu, MF_STRING, IDM_EXIT, L"E&xit");
+//        break;
+//
+//    case IDM_THEME_MENU: // Command ID for the "Theme" button
+//        hSubMenu = CreatePopupMenu();
+//        // TODO: Add check marks based on current theme
+//        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_LIGHT, L"&Light");
+//        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_DARK, L"&Dark");
+//        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_SYSTEM, L"&System Default");
+//        break;
+//
+//    case IDM_ABOUT: // Command ID for the "Help" button
+//        hSubMenu = CreatePopupMenu();
+//        AppendMenu(hSubMenu, MF_STRING, IDM_ABOUT, L"&About TextEditor...");
+//        // Add other help items if needed
+//        break;
+//
+//    case ID_EDIT_UNDO: // "Edit" button ID
+//        hSubMenu = CreatePopupMenu();
+//        // Check if undo/redo is possible for the current tab
+//        bool canUndo = false;
+//        bool canRedo = false;
+//        if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
+//            canUndo = openTabs[currentTab].historyManager->canUndo();
+//            canRedo = openTabs[currentTab].historyManager->canRedo();
+//        }
+//        AppendMenuW(hSubMenu, MF_STRING | (canUndo ? MF_ENABLED : MF_GRAYED), ID_EDIT_UNDO, L"&Undo\tCtrl+Z");
+//        AppendMenuW(hSubMenu, MF_STRING | (canRedo ? MF_ENABLED : MF_GRAYED), ID_EDIT_REDO, L"&Redo\tCtrl+Y");
+//        AppendMenuW(hSubMenu, MF_SEPARATOR, 0, NULL);
+//        AppendMenuW(hSubMenu, MF_STRING, ID_EDIT_CREATE_VERSION, L"Create New Version");
+//        AppendMenuW(hSubMenu, MF_STRING, ID_VIEW_HISTORY, L"View &History...\tF5"); // Add History View option
+//        // Add Cut, Copy, Paste later if needed (using EM_CUT, EM_COPY, EM_PASTE)
+//        break;
+//    }
+//
+//    if (hSubMenu) {
+//        // Ensure menu appears correctly relative to the button
+//        TrackPopupMenu(hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, x, y, 0, hWnd, NULL);
+//        DestroyMenu(hSubMenu); // Destroy the dynamically created popup menu
+//    }
+//
+//    if (hMenu) DestroyMenu(hMenu); // Destroy the base menu if loaded/created
+//}
 
 // Helper function to update tab title based on file name
 void UpdateTabTitle(int index) {
@@ -623,7 +778,7 @@ bool LoadFileIntoEditor(HWND hEdit, const WCHAR* filePath, std::wstring& outCont
             break;
         }
     }
-    if (tabIndex != -1) openTabs[tabIndex].processingChange = true;
+    if (tabIndex != -1) openTabs[tabIndex].processingHistoryAction = true;
 
     SetWindowTextW(hEdit, outContent.c_str());
 
@@ -635,6 +790,53 @@ bool LoadFileIntoEditor(HWND hEdit, const WCHAR* filePath, std::wstring& outCont
     if (tabIndex != -1) PostMessage(GetParent(hEdit), WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
 
     return true;
+}
+
+// Function to record a history point
+void RecordHistoryPoint(HWND hWnd, int tabIndex, const std::wstring& description) { // Added description param
+    if (tabIndex < 0 || tabIndex >= openTabs.size() || !openTabs[tabIndex].historyManager) {
+        return;
+    }
+
+    auto& tab = openTabs[tabIndex];
+
+    // Prevent recording if editor is currently being updated by history action
+    if (tab.processingHistoryAction) return;
+
+    std::wstring currentState = GetRichEditText(tab.hEdit);
+
+    // Avoid recording if text hasn't actually changed from last *recorded history point*
+    if (currentState == tab.textAtLastHistoryPoint) {
+        tab.changesSinceLastHistoryPoint = false; // Reset flag even if no change recorded
+        return;
+    }
+
+    // --- Synchronization Note ---
+    // We calculate the diff between the *actual current editor state* and the
+    // *state of the last recorded history point*.
+    // The new node will be added as a child of the *manager's internal currentNode*.
+    // If the user used RichEdit undo/redo, currentNode might not represent textAtLastHistoryPoint.
+    // This leads to branches in the history tree, reflecting the divergence. This is acceptable.
+
+    // Calculate the change from the *last recorded history state*
+    TextChange change = CalculateTextChange(tab.textAtLastHistoryPoint, currentState, tab.hEdit);
+    // TODO: Optionally add 'description' to TextChange or HistoryNode if needed for the UI
+
+    // --- Check if the change is non-empty ---
+    if (change.insertedText.empty() && change.deletedText.empty()) {
+        tab.changesSinceLastHistoryPoint = false; // Reset flag
+        return; // Don't record no-op changes
+    }
+
+    // Record the change. This implicitly moves the history manager's 'currentNode' forward.
+    tab.historyManager->recordChange(change);
+
+    // Update the baseline for the next diff calculation to the *current* state
+    tab.textAtLastHistoryPoint = currentState;
+    tab.changesSinceLastHistoryPoint = false; // Reset flag, changes up to now are recorded
+
+    // Optional: Update status bar or log history event
+    // Optional: Could prune very old history here if needed
 }
 
 // Helper function to save editor content to a file
@@ -688,8 +890,9 @@ bool SaveEditorContent(int tabIndex, bool saveAs) {
         UpdateWindowTitle(GetParent(hTabCtrl)); // Update main window title
         // --- End update tab info ---
 
-
+		RecordHistoryPoint(GetParent(hTabCtrl), tabIndex, L"File Saved"); // Record history point
         // Mark editor control as unmodified (might be redundant but safe)
+
         SendMessage(openTabs[tabIndex].hEdit, EM_SETMODIFY, FALSE, 0);
         return true;
     }
@@ -700,30 +903,344 @@ bool SaveEditorContent(int tabIndex, bool saveAs) {
 }
 
 
+// Finds the node in history matching the current editor text and updates
+// the history manager's internal pointer. Essential before showing History UI.
+void SyncHistoryManagerToEditor(HWND hWnd, int tabIndex) {
+    if (tabIndex < 0 || tabIndex >= openTabs.size() || !openTabs[tabIndex].historyManager) {
+        return;
+    }
+    auto& tab = openTabs[tabIndex];
+    auto& historyManager = tab.historyManager;
+
+    std::wstring currentState = GetRichEditText(tab.hEdit);
+
+    // Check if current node *already* matches (optimization)
+    std::shared_ptr<const HistoryNode> internalCurrentNode = historyManager->getCurrentNode();
+    std::wstring stateAtInternalCurrent = historyManager->reconstructStateToNode(internalCurrentNode);
+
+    if (stateAtInternalCurrent == currentState) {
+        // Already in sync, nothing to do.
+        // Update baseline text just in case it drifted? Usually not needed here.
+         // tab.textAtLastHistoryPoint = currentState;
+        OutputDebugStringW(L"SyncHistoryManager: Already in sync.\n");
+        return;
+    }
+
+    // If not in sync, perform the search
+    OutputDebugStringW(L"SyncHistoryManager: Editor state differs from internal currentNode. Searching...\n");
+    std::shared_ptr<HistoryNode> foundNode = historyManager->findNodeMatchingState(currentState);
+
+    if (foundNode) {
+        OutputDebugStringW(L"SyncHistoryManager: Found matching node. Updating internal pointer.\n");
+        // Found the node matching the editor's current state.
+        // Update the internal pointer *without* changing editor text.
+        historyManager->setCurrentNode(foundNode); // Use the new method (see Step III)
+        // Update the baseline text to match the newly synced state
+        tab.textAtLastHistoryPoint = currentState;
+    }
+    else {
+        // Editor state does not match ANY known state in the history tree!
+        // This implies external modification or a bug.
+        OutputDebugStringW(L"SyncHistoryManager: WARNING! Editor state not found in history tree.\n");
+        // What to do? Options:
+        // 1. Log error.
+        // 2. Treat current state as a new branch point:
+        //    - Calculate change from internalCurrentNode's state to currentState.
+        //    - Record this as a new node off internalCurrentNode.
+        //    - Then set internalCurrentNode to this new node.
+        // 3. For simplicity now: Just log and potentially reset baseline.
+        tab.textAtLastHistoryPoint = currentState; // Reset baseline to current unknown state
+        // The history tree UI might show the old internalCurrentNode highlighted, which is technically correct
+        // but doesn't reflect the editor. The user switching would fix it.
+    }
+}
+
+
+// Recursive helper to populate the history TreeView
+void PopulateHistoryTreeRecursive(HWND hTree,
+    HistoryDialogParams* params,
+    std::shared_ptr<const HistoryNode> node,
+    HTREEITEM hParentItem,
+    HTREEITEM& hCurrentItemTree // Pass by ref to store the HTREEITEM for the current node
+)
+{
+    if (!node || !params) return;
+
+    // 1. Create description string for the node
+    std::wstring description;
+    if (node->isRoot()) {
+        description = L"Initial State";
+    }
+    else {
+        // Format timestamp (example using C++20 chrono format, fallback needed for older compilers)
+        // This requires #include <format> and C++20
+        // std::string timestampStr = std::format("{:%Y-%m-%d %H:%M:%S}", node->timestamp); // C++20
+        // Fallback: Use older methods if C++20 format isn't available
+        time_t tt = std::chrono::system_clock::to_time_t(node->timestamp);
+        tm local_tm;
+        localtime_s(&local_tm, &tt); // Use secure version
+        char buffer[80];
+        strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local_tm);
+        std::string timestampStr(buffer);
+
+
+        // Add change details
+        description = L"[" + std::wstring(timestampStr.begin(), timestampStr.end()) + L"] "
+            + L"Pos:" + std::to_wstring(node->changeFromParent.position)
+            + L" (+" + std::to_wstring(node->changeFromParent.insertedText.length())
+            + L" / -" + std::to_wstring(node->changeFromParent.deletedText.length())
+            + L")";
+        // TODO: Could add the 'description' from RecordHistoryPoint if stored
+    }
+
+
+    // 2. Prepare TreeView item struct
+    TVINSERTSTRUCT tvis = { 0 };
+    tvis.hParent = hParentItem;
+    tvis.hInsertAfter = TVI_LAST; // Add children in order
+    tvis.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE; // Include state for selection/expansion
+    tvis.item.pszText = &description[0]; // Use pointer to string data
+    tvis.item.lParam = (LPARAM)node.get(); // Store RAW pointer in lParam for quick comparison (use map for safety)
+    tvis.item.state = 0;
+    tvis.item.stateMask = TVIS_SELECTED | TVIS_EXPANDED; // We care about these states
+
+    // Check if this is the node matching the current editor state
+    if (node == params->nodeAtEditorState) {
+        tvis.item.state = TVIS_SELECTED | TVIS_EXPANDED;
+    }
+    else if (hParentItem == TVI_ROOT) { // Expand root by default
+        tvis.item.state = TVIS_EXPANDED;
+    }
+
+
+    // 3. Insert item into TreeView
+    HTREEITEM hNewItem = TreeView_InsertItem(hTree, &tvis);
+
+    // 4. Store mapping from HTREEITEM to shared_ptr
+    if (hNewItem) {
+        params->treeItemNodeMap[hNewItem] = node; // Add to our safe map
+        if (node == params->nodeAtEditorState) {
+            hCurrentItemTree = hNewItem; // Store the HTREEITEM if it's the current one
+        }
+    }
+
+    // 5. Recursively add children (process in reverse if you want newest on top within a level)
+    // Standard order (oldest child first):
+    for (const auto& child : node->children) {
+        PopulateHistoryTreeRecursive(hTree, params, child, hNewItem, hCurrentItemTree);
+    }
+    // Reverse order (newest child first under parent):
+    /*
+    for (auto it = node->children.rbegin(); it != node->children.rend(); ++it) {
+        PopulateHistoryTreeRecursive(hTree, params, *it, hNewItem, hCurrentItemTree);
+    }
+    */
+}
+
+//---------------------------------------------------------------------------
+// HistoryDlgProc - Dialog Procedure for the History Tree window
+//---------------------------------------------------------------------------
+INT_PTR CALLBACK HistoryDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    HistoryDialogParams* params = nullptr;
+    // Retrieve params pointer stored during WM_INITDIALOG
+    if (message != WM_INITDIALOG) {
+        params = reinterpret_cast<HistoryDialogParams*>(GetWindowLongPtr(hDlg, DWLP_USER));
+    }
+
+    switch (message)
+    {
+    case WM_INITDIALOG:
+    {
+        // Retrieve parameters passed from DialogBoxParam
+        params = reinterpret_cast<HistoryDialogParams*>(lParam);
+        if (!params || !params->historyManager) {
+            EndDialog(hDlg, IDCANCEL); // Cannot proceed without params
+            return (INT_PTR)FALSE;
+        }
+        // Store params pointer for later use in other messages
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)params);
+
+        // Get control handles
+        HWND hTree = GetDlgItem(hDlg, IDC_HISTORY_TREEVIEW);
+        HWND hSwitchButton = GetDlgItem(hDlg, ID_SWITCH_VERSION);
+        if (!hTree || !hSwitchButton) {
+            EndDialog(hDlg, IDCANCEL); // Controls missing
+            return (INT_PTR)FALSE;
+        }
+
+        // --- Populate the TreeView ---
+        std::shared_ptr<const HistoryNode> root = params->historyManager->getHistoryTreeRoot();
+        params->nodeAtEditorState = params->historyManager->getCurrentNode(); // Get the node synced by ShowHistoryTree
+        params->treeItemNodeMap.clear(); // Ensure map is empty before population
+
+        HTREEITEM hCurrentItemTree = NULL; // To store the HTREEITEM of the selected node
+        PopulateHistoryTreeRecursive(hTree, params, root, TVI_ROOT, hCurrentItemTree);
+
+        // Ensure the initially selected item is visible and selected
+        if (hCurrentItemTree) {
+            TreeView_SelectItem(hTree, hCurrentItemTree); // Explicitly select
+            TreeView_EnsureVisible(hTree, hCurrentItemTree);
+        }
+
+        // Initial button state: Disable switch button initially,
+        // it will be enabled in WM_NOTIFY if a *different* node is selected.
+        EnableWindow(hSwitchButton, FALSE);
+
+        return (INT_PTR)TRUE; // System sets default focus
+    }
+
+    case WM_NOTIFY:
+    {
+        if (!params) break; // Should have params by now
+
+        LPNMHDR pnmh = (LPNMHDR)lParam;
+        if (pnmh->idFrom == IDC_HISTORY_TREEVIEW && pnmh->code == TVN_SELCHANGED)
+        {
+            HWND hTree = pnmh->hwndFrom; // Handle to the TreeView
+            HWND hSwitchButton = GetDlgItem(hDlg, ID_SWITCH_VERSION);
+            HTREEITEM hSelectedItem = TreeView_GetSelection(hTree);
+
+            bool enableSwitch = false;
+            if (hSelectedItem != NULL) {
+                // Find the selected node in our map
+                auto it = params->treeItemNodeMap.find(hSelectedItem);
+                if (it != params->treeItemNodeMap.end()) {
+                    std::shared_ptr<const HistoryNode> selectedNode = it->second;
+                    // Enable switch button ONLY if the selected node is NOT the one currently in the editor
+                    if (selectedNode != params->nodeAtEditorState) {
+                        enableSwitch = true;
+                    }
+                }
+            }
+            EnableWindow(hSwitchButton, enableSwitch);
+            return (INT_PTR)TRUE;
+        }
+    }
+    break;
+
+    case WM_COMMAND:
+    {
+        if (!params) break; // Should have params by now
+
+        int wmId = LOWORD(wParam);
+        switch (wmId)
+        {
+        case ID_SWITCH_VERSION:
+        {
+            HWND hTree = GetDlgItem(hDlg, IDC_HISTORY_TREEVIEW);
+            HTREEITEM hSelectedItem = TreeView_GetSelection(hTree);
+
+            if (hSelectedItem != NULL) {
+                // Find the target node shared_ptr from our map
+                auto it = params->treeItemNodeMap.find(hSelectedItem);
+                if (it != params->treeItemNodeMap.end()) {
+                    std::shared_ptr<const HistoryNode> targetNodeSharedPtr = it->second;
+
+                    // Retrieve the necessary components from params
+                    VersionHistoryManager* historyManager = params->historyManager;
+                    int tabIndex = params->tabIndex;
+
+                    if (historyManager && tabIndex >= 0 && tabIndex < openTabs.size()) {
+                        // --- Perform the switch ---
+                        // 1. Get the full text state for the target node
+                        std::wstring newState = historyManager->reconstructStateToNode(targetNodeSharedPtr);
+
+                        // 2. Update the main Rich Edit control (this clears RichEdit Undo)
+                        SetRichEditText(openTabs[tabIndex].hEdit, newState, targetNodeSharedPtr);
+
+                        // 3. Update the baseline text in the tab info
+                        openTabs[tabIndex].textAtLastHistoryPoint = newState;
+                        openTabs[tabIndex].changesSinceLastHistoryPoint = false; // State now matches history point
+
+                        // 4. Crucially, update the internal pointer AFTER applying the state
+                        historyManager->setCurrentNode(std::const_pointer_cast<HistoryNode>(targetNodeSharedPtr)); // Cast away constness if setCurrentNode takes non-const
+
+                        // 5. Close the dialog indicating success
+                        EndDialog(hDlg, IDOK);
+                    }
+                    else {
+                        // Handle error: manager or tab index invalid
+                        MessageBoxW(hDlg, L"Error retrieving necessary data to switch version.", L"Error", MB_OK | MB_ICONERROR);
+                    }
+                }
+                else {
+                    // Handle error: selected item not found in map? Should not happen.
+                    MessageBoxW(hDlg, L"Internal error: Cannot find data for selected history item.", L"Error", MB_OK | MB_ICONERROR);
+                }
+            }
+            return (INT_PTR)TRUE;
+        }
+
+        case IDCANCEL:
+            EndDialog(hDlg, IDCANCEL);
+            return (INT_PTR)TRUE;
+        }
+    }
+    break;
+
+    case WM_DESTROY:
+    {
+        // Clean up map if necessary (though shared_ptrs handle memory, the map itself lives with params)
+        // If params were dynamically allocated (they are not here), delete them.
+        // Resetting the DWLP_USER is good practice but not strictly necessary if dialog is destroyed.
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)nullptr);
+    }
+    break;
+    }
+    return (INT_PTR)FALSE; // Default processing for unhandled messages
+}
+
+//---------------------------------------------------------------------------
+// ShowHistoryTree
+// Displays the version history dialog for the current tab.
+//---------------------------------------------------------------------------
 void ShowHistoryTree(HWND hWnd) {
-    if (currentTab < 0 || currentTab >= openTabs.size() || !openTabs[currentTab].historyManager) return;
+    if (currentTab < 0 || currentTab >= openTabs.size() || !openTabs[currentTab].historyManager) {
+        MessageBoxW(hWnd, L"No active tab or history available.", L"History", MB_OK | MB_ICONWARNING);
+        return;
+    }
 
-    // TODO: Implement History Tree Dialog/Panel
-    // 1. Create a new dialog resource (e.g., IDD_HISTORY_TREE) with a TreeView control (WC_TREEVIEW).
-    // 2. Create a DialogProc for this dialog.
-    // 3. In WM_INITDIALOG:
-    //    - Get the VersionHistoryManager for the current tab.
-    //    - Get the root node: std::shared_ptr<const HistoryNode> root = historyManager->getHistoryTreeRoot();
-    //    - Recursively populate the TreeView control using TreeView_InsertItem macro.
-    //      - Store the std::shared_ptr<HistoryNode> (or a unique ID) in the lParam of each TreeView item (TVITEM).
-    //      - Highlight the item corresponding to historyManager->getCurrentNode().
-    // 4. Handle TVN_SELCHANGED notification in the DialogProc:
-    //    - When the user selects a node in the TreeView.
-    // 5. Handle Button Clicks (e.g., "Switch to this version"):
-    //    - Get the selected TreeView item.
-    //    - Retrieve the HistoryNode pointer/ID from its lParam.
-    //    - Find the corresponding std::shared_ptr<HistoryNode> (might need a map if using IDs).
-    //    - Call: std::wstring newState = openTabs[currentTab].historyManager->switchToNode(targetNodePtr);
-    //    - Update the main Rich Edit control: SetWindowTextW(openTabs[currentTab].hEdit, newState.c_str());
-    //    - Close the history dialog.
-    // 6. Show the dialog using DialogBoxParam (passing necessary info like the manager pointer).
+    // --- Synchronization Step ---
+    // Ensure the history manager's internal pointer matches the editor's current state
+    // BEFORE showing the dialog. This is crucial for highlighting the correct item.
+    SyncHistoryManagerToEditor(hWnd, currentTab);
+    // --- End Synchronization Step ---
 
-    MessageBoxW(hWnd, L"History Tree UI not implemented yet.", L"Info", MB_OK | MB_ICONINFORMATION);
+    // Prepare parameters to pass to the dialog procedure
+    HistoryDialogParams params;
+    params.historyManager = openTabs[currentTab].historyManager.get(); // Pass raw pointer
+    params.tabIndex = currentTab;
+    params.hParent = hWnd;
+    // params.treeItemNodeMap is initialized empty and populated in WM_INITDIALOG
+    // params.nodeAtEditorState is set in WM_INITDIALOG
+
+    // Create the modal dialog box
+    // DialogBoxParam function returns when the dialog is closed (e.g., via EndDialog)
+    INT_PTR result = DialogBoxParam(
+        hInst,                          // Application instance handle
+        MAKEINTRESOURCE(IDD_HISTORY_TREE), // Dialog resource ID
+        hWnd,                           // Parent window handle
+        HistoryDlgProc,                 // Dialog procedure
+        (LPARAM)&params                 // Parameter to pass to WM_INITDIALOG
+    );
+
+    // Optional: Handle dialog result if needed (e.g., check if IDOK or IDCANCEL was returned)
+    if (result == -1) {
+        MessageBoxW(hWnd, L"Failed to create history dialog.", L"Error", MB_OK | MB_ICONERROR);
+    }
+    else if (result == IDOK) {
+        // History switch was successful (handled within the dialog proc)
+        // Maybe update status bar?
+    }
+    else {
+        // Dialog was cancelled (IDCANCEL or error)
+    }
+
+    // Focus back on the editor of the current tab after dialog closes
+    if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].hEdit) {
+        SetFocus(openTabs[currentTab].hEdit);
+    }
 }
 
 
@@ -733,7 +1250,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
     case WM_CREATE:
     {
-        CreateToolbar(hWnd);
+        /*CreateToolbar(hWnd);*/
         CreateTabControl(hWnd);
         CreateTab(hWnd, L"Untitled", nullptr); // Create initial tab
         ResizeControls(hWnd); // Initial sizing
@@ -742,13 +1259,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_POST_APPLY_CHANGE:
         {
-            HWND hEdit = (HWND)wParam;
-            for (auto& tab : openTabs) {
-                if (tab.hEdit == hEdit) {
-                    tab.processingChange = false;
-                    break;
-                }
+        HWND hEdit = (HWND)wParam;
+        for (auto& tab : openTabs) {
+            if (tab.hEdit == hEdit) {
+                tab.processingHistoryAction = false;
+                break;
             }
+        }
         }
         break;
 
@@ -756,28 +1273,85 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         ResizeControls(hWnd);
         break;
 
+    case WM_TIMER:
+    {
+        UINT_PTR timerId = (UINT_PTR)wParam;
+        // Find the tab associated with this timer ID  //Maybe TODO:
+        int tabIndex = -1;
+        for (int i = 0; i < openTabs.size(); ++i) {
+            // Compare against the stored ID OR the HWND used as ID
+            if (openTabs[i].idleTimerId != 0 && reinterpret_cast<UINT_PTR>(openTabs[i].hEdit) == timerId) {
+                // Check if the timer *actually* belongs to this tab,
+                // SetTimer might reuse IDs if we don't manage them carefully.
+                // Using the HWND as ID is generally safer if HWNDs are unique.
+                if (openTabs[i].idleTimerId == GetWindowLongPtr(openTabs[i].hEdit, GWLP_USERDATA)) { /* Example check if storing ID on HWND */ }
+                // Simpler: Assume the HWND cast is the ID if that's what SetTimer used.
+                tabIndex = i;
+                break;
+            }
+            // Fallback if using sequential IDs stored in idleTimerId directly
+            else if (openTabs[i].idleTimerId == timerId) {
+                tabIndex = i;
+                break;
+            }
+        }
+
+        if (tabIndex != -1 && currentTab == tabIndex) { // Ensure it's the active tab's timer
+            auto& tab = openTabs[tabIndex];
+            // Check if changes occurred and the timer is the one we set
+            if (tab.changesSinceLastHistoryPoint && reinterpret_cast<UINT_PTR>(tab.hEdit) == timerId) {
+                // Kill this specific timer instance *before* processing
+                // to prevent potential rapid re-firing if processing takes time.
+                KillTimer(hWnd, timerId);
+                tab.idleTimerId = 0; // Mark timer as inactive until reset by next change
+
+                // Now record the history point
+                RecordHistoryPoint(hWnd, tabIndex, L"Automatic (Idle)");
+            }
+            else {
+                // Timer fired but no changes, or wrong timer ID - just kill it
+                KillTimer(hWnd, timerId);
+                if (reinterpret_cast<UINT_PTR>(tab.hEdit) == timerId) {
+                    tab.idleTimerId = 0; // Mark as inactive
+                }
+            }
+        }
+        else if (tabIndex != -1) {
+            // Timer for an inactive tab fired? Should ideally not happen often if we manage timers well.
+            // Kill it just in case.
+            KillTimer(hWnd, timerId);
+            if (reinterpret_cast<UINT_PTR>(openTabs[tabIndex].hEdit) == timerId) {
+                openTabs[tabIndex].idleTimerId = 0;
+            }
+        }
+        return 0; // Indicate message processed
+    }
+    break;
+    
     case WM_NOTIFY:
         {
             LPNMHDR pnmh = (LPNMHDR)lParam;
-            if (pnmh->hwndFrom == hToolBar && pnmh->code == TBN_DROPDOWN) {
-                // Handle toolbar button dropdown clicks
-                LPNMTOOLBAR lpnmTB = (LPNMTOOLBAR)lParam;
+            /*
+            //if (pnmh->hwndFrom == hToolBar && pnmh->code == TBN_DROPDOWN) {
+            //    // Handle toolbar button dropdown clicks
+            //    LPNMTOOLBAR lpnmTB = (LPNMTOOLBAR)lParam;
 
-                // Get button rect
-                RECT rc;
-                SendMessage(hToolBar, TB_GETRECT, (WPARAM)lpnmTB->iItem, (LPARAM)&rc);
+            //    // Get button rect
+            //    RECT rc;
+            //    SendMessage(hToolBar, TB_GETRECT, (WPARAM)lpnmTB->iItem, (LPARAM)&rc);
 
-                // Convert to screen coordinates
-                POINT pt = { rc.left, rc.bottom };
-                ClientToScreen(hToolBar, &pt);
+            //    // Convert to screen coordinates
+            //    POINT pt = { rc.left, rc.bottom };
+            //    ClientToScreen(hToolBar, &pt);
 
-                // Show the appropriate popup menu
-                ShowPopupMenu(hWnd, lpnmTB->iItem, pt.x, pt.y);
+            //    // Show the appropriate popup menu
+            //    ShowPopupMenu(hWnd, lpnmTB->iItem, pt.x, pt.y);
 
-                return TBDDRET_DEFAULT; // Prevent default handling if needed
-            }
+            //    return TBDDRET_DEFAULT; // Prevent default handling if needed
+            //}
+            */
             // --- Tab Control Selection Change ---
-            else if (pnmh->idFrom == IDC_TABCTRL && pnmh->code == TCN_SELCHANGE) {
+            if (pnmh->idFrom == IDC_TABCTRL && pnmh->code == TCN_SELCHANGE) {
                 int index = TabCtrl_GetCurSel(hTabCtrl);
                 SwitchToTab(index); // Handles showing/hiding, focus, title update
             }
@@ -806,32 +1380,34 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 }
             }
             // --- RICH EDIT NOTIFICATIONS ---
-            else if (currentTab >= 0 && currentTab < openTabs.size() && pnmh->hwndFrom == openTabs[currentTab].hEdit) {
-                // Check it's the active editor generating the notification
+            if (currentTab >= 0 && currentTab < openTabs.size() && pnmh->hwndFrom == openTabs[currentTab].hEdit) {
+                auto& tab = openTabs[currentTab]; // Use reference for cleaner code
+
                 if (pnmh->code == EN_CHANGE) {
-                    // Check processing flag to prevent recursion from undo/redo application
-                    if (!openTabs[currentTab].processingChange) {
-                        // --- Record Change ---
-                        std::wstring textAfter = GetRichEditText(openTabs[currentTab].hEdit);
-                        // Retrieve text *before* the change (stored in the tab info)
-                        std::wstring textBefore = openTabs[currentTab].textBeforeChange;
-
-                        // Calculate the diff
-                        TextChange change = CalculateTextChange(textBefore, textAfter, openTabs[currentTab].hEdit);
-
-                        // Record in history manager
-                        if (openTabs[currentTab].historyManager) {
-                            openTabs[currentTab].historyManager->recordChange(change);
-                        }
-
-                        // Update textBeforeChange for the *next* change event
-                        openTabs[currentTab].textBeforeChange = textAfter;
-
-                        // Mark tab as modified
-                        openTabs[currentTab].isModified = true; // A change occurred
+                    // Check processing flag to prevent recursion from history actions
+                    if (!tab.processingHistoryAction) {
+                        // --- Actions on ANY change (even if not recorded yet) ---
+                        tab.isModified = true; // A change occurred
                         UpdateTabTitle(currentTab);
                         UpdateWindowTitle(hWnd);
-                        // --- End Record Change ---
+                        tab.textBeforeChange = GetRichEditText(tab.hEdit); // Keep for CalculateTextChange
+
+                        // --- History Recording Trigger Logic ---
+                        tab.changesSinceLastHistoryPoint = true; // Mark that changes happened
+
+                        // Kill previous timer for this tab, if any
+                        if (tab.idleTimerId != 0) {
+                            KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
+                        }
+                        // Reset/Start the idle timer
+                        UINT_PTR timerIdentifier = reinterpret_cast<UINT_PTR>(tab.hEdit);
+                        const UINT idleTimeoutMs = IDLE_HISTORY_TIMEOUT_MS; // 4 seconds - make configurable?
+                        tab.idleTimerId = SetTimer(hWnd, // Main window handles timers
+                            timerIdentifier, // Unique ID for this tab's timer (using HWND)
+                            idleTimeoutMs,
+                            nullptr);      // Use WM_TIMER in this WndProc
+
+                        // --- DO NOT CALL RecordHistoryPoint or historyManager->recordChange HERE ---
                     }
                 }
                 else if (pnmh->code == EN_SELCHANGE) {
@@ -901,7 +1477,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         //    }
         //    break;
         case ID_VIEW_HISTORY:
-            ShowHistoryTree(hWnd);
+            if (currentTab >= 0) {
+                SyncHistoryManagerToEditor(hWnd, currentTab); // 
+                ShowHistoryTree(hWnd);
+            }
+            break;
+
+            // command for manual snapshot
+        case ID_EDIT_CREATE_VERSION: 
+            if (currentTab >= 0) {
+                // Optional: Sync first? Might not be needed if user explicitly requests snapshot of current state.
+                // SyncHistoryManagerToEditor(hWnd, currentTab);
+                RecordHistoryPoint(hWnd, currentTab, L"Manual Snapshot");
+                // Give user feedback? Maybe status bar message.
+                MessageBoxW(hWnd, L"Created manual version snapshot.", L"History", MB_OK | MB_ICONINFORMATION);
+            }
             break;
 
             // --- THEME ---
@@ -919,39 +1509,39 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     break; // End WM_COMMAND
 
-	//TODO: this keyboard shortcuts handling is not working right now, need changes
-    case WM_KEYDOWN:
-        // Handle accelerators here if not using an accelerator table or for specific needs
-        if (GetKeyState(VK_CONTROL) & 0x8000) { // Check if Control key is pressed
-            switch (wParam) {
-            case 'P': // Ctrl+P
-                ShowCommandPalette(hWnd);
-                return 0; 
-            case 'T': // Ctrl+T
-                PostMessage(hWnd, WM_COMMAND, ID_FILE_NEW, 0); // Use PostMessage to avoid re-entrancy issues
-                return 0;
-            case 'W': // Ctrl+W
-                if (currentTab >= 0) {
-                    PostMessage(hWnd, WM_COMMAND, ID_CLOSE_TAB, 0);
-                }
-                return 0; 
-            case 'O': // Ctrl+O
-                PostMessage(hWnd, WM_COMMAND, ID_FILE_OPEN, 0);
-                return 0; 
-            case 'S': // Ctrl+S
-                if (currentTab >= 0) {
-                    // Check Shift key for Save As (Ctrl+Shift+S)
-                    if (GetKeyState(VK_SHIFT) & 0x8000) {
-                        PostMessage(hWnd, WM_COMMAND, ID_FILE_SAVEAS, 0);
-                    }
-                    else {
-                        PostMessage(hWnd, WM_COMMAND, ID_FILE_SAVE, 0);
-                    }
-                }
-                return 0; 
-            }
-        }
-        return DefWindowProc(hWnd, message, wParam, lParam); // Default handling for other keys
+	////TODO: this keyboard shortcuts handling is not working right now, need changes
+ //   case WM_KEYDOWN:
+ //       // Handle accelerators here if not using an accelerator table or for specific needs
+ //       if (GetKeyState(VK_CONTROL) & 0x8000) { // Check if Control key is pressed
+ //           switch (wParam) {
+ //           case 'P': // Ctrl+P
+ //               ShowCommandPalette(hWnd);
+ //               return 0; 
+ //           case 'T': // Ctrl+T
+ //               PostMessage(hWnd, WM_COMMAND, ID_FILE_NEW, 0); // Use PostMessage to avoid re-entrancy issues
+ //               return 0;
+ //           case 'W': // Ctrl+W
+ //               if (currentTab >= 0) {
+ //                   PostMessage(hWnd, WM_COMMAND, ID_CLOSE_TAB, 0);
+ //               }
+ //               return 0; 
+ //           case 'O': // Ctrl+O
+ //               PostMessage(hWnd, WM_COMMAND, ID_FILE_OPEN, 0);
+ //               return 0; 
+ //           case 'S': // Ctrl+S
+ //               if (currentTab >= 0) {
+ //                   // Check Shift key for Save As (Ctrl+Shift+S)
+ //                   if (GetKeyState(VK_SHIFT) & 0x8000) {
+ //                       PostMessage(hWnd, WM_COMMAND, ID_FILE_SAVEAS, 0);
+ //                   }
+ //                   else {
+ //                       PostMessage(hWnd, WM_COMMAND, ID_FILE_SAVE, 0);
+ //                   }
+ //               }
+ //               return 0; 
+ //           }
+ //       }
+ //       return DefWindowProc(hWnd, message, wParam, lParam); // Default handling for other keys
 
 
     case WM_CLOSE:

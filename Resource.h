@@ -34,6 +34,7 @@
 #define IDC_STATIC                      -1
 #define ID_EDIT_CREATE_VERSION         32774
 
+
 //History Dialog Resources
 #define IDD_HISTORY_TREE            104     // Dialog ID
 #define IDC_HISTORY_TREEVIEW        1001    // TreeView control ID
