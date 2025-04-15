@@ -32,16 +32,22 @@
 #define IDD_COMMANDPALETTE              2001
 #define ID_EDIT_VIEWHISTORY             32772  //decreased from 32773
 #define IDC_STATIC                      -1
-#define ID_EDIT_CREATE_VERSION         32773    //decreased from 32774
+#define ID_EDIT_COMMIT        32773    //decreased from 32774
 #define ID_REDO_BRANCH_BASE				40000
 #define IDD_COMMIT_MESSAGE              401     // Dialog ID (ensure unique)
 #define IDC_COMMIT_MESSAGE_EDIT         402    // Edit control ID
 #define IDC_COMMIT_PROMPT_STATIC        403    // Static text prompt ID (optional)
+#define IDD_CHOOSE_CHILD_COMMIT         404   // Or next available unique dialog ID
+#define IDC_CHILD_COMMIT_LIST           405   // List box ID within the new dialog
+#define IDC_CHILD_COMMIT_STATIC         406   // Optional static text prompt
+
 
 //History Dialog Resources
 #define IDD_HISTORY_TREE            1008     // Dialog ID
 #define IDC_HISTORY_TREEVIEW        1009    // TreeView control ID
 #define ID_SWITCH_VERSION           1007    // "Switch" Button ID
+#define ID_HISTORY_PREVIOUS             32775 
+#define ID_HISTORY_NEXT_CHILD           32776
 
 // Next default values for new objects
 // 

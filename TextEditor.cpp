@@ -20,6 +20,7 @@
 
 #define WM_POST_APPLY_CHANGE (WM_USER + 100)
 #define IDLE_HISTORY_TIMEOUT_MS 4000
+#define SIGNIFICANT_CHANGE_THRESHOLD 101
 
 
 // Global Variables:
@@ -46,6 +47,7 @@ struct EditorTabInfo {
     //This avoids reconstructing from root to calculate the next diff.
 	std::wstring textAtLastHistoryPoint = L"";
      bool processingHistoryAction = false; // 
+	 size_t totalChangeSize = 0; // total size of changes since last history point
 };
 std::vector<EditorTabInfo> openTabs;
 int currentTab = -1;
@@ -62,6 +64,13 @@ struct HistoryDialogParams {
     std::shared_ptr<const HistoryNode> nodeAtEditorState = nullptr;
 };
 
+struct ChooseChildDialogParams {
+    VersionHistoryManager* historyManager = nullptr;
+    std::vector<std::wstring> descriptions;
+    int selectedIndex = -1; // To store the result
+};
+
+
 // Structure to pass data to/from Commit Message Dialog
 struct CommitMessageParams {
     std::wstring* pCommitMessage = nullptr; // Pointer to store the result
@@ -74,6 +83,8 @@ LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    CommandPaletteProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    CommitMessageDlgProc(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK    HistoryDlgProc(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK    ChooseChildCommitDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 void                CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath);
 void                SwitchToTab(int index);
 void                CloseTab(int index);
@@ -338,6 +349,7 @@ TextChange CalculateTextChange(const std::wstring& before, const std::wstring& a
     // This is a VERY basic diff implementation. For a real editor,
     // use a proper diff algorithm (e.g., Myers diff).
     // This basic version finds the first and last differing characters.
+    OutputDebugStringW((L"CalculateTextChange:\n  Before: [" + before + L"]\n  After:  [" + after + L"]\n").c_str());
 
     size_t firstDiff = 0;
     while (firstDiff < before.length() && firstDiff < after.length() && before[firstDiff] == after[firstDiff]) {
@@ -359,8 +371,54 @@ TextChange CalculateTextChange(const std::wstring& before, const std::wstring& a
     SendMessage(hEdit, EM_EXGETSEL, 0, (LPARAM)&cr);
     size_t cursorPosAfter = cr.cpMax; // Use end of selection as cursor pos
 
+    // Log calculated results
+    OutputDebugStringW((L"  Result:\n    Pos: " + std::to_wstring(firstDiff)
+        + L"\n    Inserted: [" + insertedText + L"] (" + std::to_wstring(insertedText.length()) + L" chars)"
+        + L"\n    Deleted:  [" + deletedText + L"] (" + std::to_wstring(deletedText.length()) + L" chars)\n").c_str());
+
     return TextChange(firstDiff, insertedText, deletedText, cursorPosAfter);
 }
+
+// Finds the corresponding tab and updates its state after text is set programmatically
+void UpdateTabStateAfterHistoryAction(HWND hEdit, const std::wstring& newText, std::shared_ptr<const HistoryNode> targetNode) {
+    int tabIndex = -1;
+    for (int i = 0; i < openTabs.size(); ++i) {
+        if (openTabs[i].hEdit == hEdit) {
+            tabIndex = i;
+            break;
+        }
+    }
+    if (tabIndex == -1) return;
+
+    auto& tab = openTabs[tabIndex];
+
+    // Update baseline text *critical*
+    tab.textAtLastHistoryPoint = newText;
+    tab.textBeforeChange = newText; // Keep this in sync too
+    tab.changesSinceLastHistoryPoint = false; // State now matches a specific history point
+    tab.totalChangeSize = 0; // Reset accumulated size
+
+    // TODO: Update modification status - compare newText to saved state if tracked,
+    // otherwise, assume jumping in history makes it potentially "unsaved"
+    // For simplicity now, let's mark it unmodified relative to the history point,
+    // but potentially modified relative to the file on disk (needs better tracking).
+    SendMessage(hEdit, EM_SETMODIFY, FALSE, 0); // Mark control as unmodified
+    tab.isModified = true; // Mark tab as potentially modified relative to file (needs refinement)
+    UpdateTabTitle(tabIndex);
+    UpdateWindowTitle(GetParent(hEdit));
+
+    // Update the history manager's internal pointer *if* a targetNode was provided
+    // Do this AFTER setting text and updating our baselines.
+    if (targetNode && tab.historyManager) {
+        // Need const_cast if setCurrentNode requires non-const shared_ptr
+        tab.historyManager->setCurrentNode(std::const_pointer_cast<HistoryNode>(targetNode));
+    }
+
+    // Ensure the flag is cleared *after* potential EN_CHANGE is processed
+    PostMessage(GetParent(hEdit), WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
+}
+
+
 
 //Helper to set text, clear RichEdit undo, and manage flags Pass the targetNode to restore cursor position accurately.
 void SetRichEditText(HWND hEdit, const std::wstring& text, std::shared_ptr<const HistoryNode> targetNode = nullptr) {
@@ -413,12 +471,11 @@ void SetRichEditText(HWND hEdit, const std::wstring& text, std::shared_ptr<const
     SendMessage(hEdit, EM_EXSETSEL, 0, (LPARAM)&newSel);
 
 
-    // Mark control as unmodified (since it now matches a specific history state)
-    // Note: tab.isModified should be updated based on whether this state matches the saved state on disk.
-    SendMessage(hEdit, EM_SETMODIFY, FALSE, 0);
+    UpdateTabStateAfterHistoryAction(hEdit, text, targetNode);
+    //// Mark control as unmodified (since it now matches a specific history state)
+    //// Note: tab.isModified should be updated based on whether this state matches the saved state on disk.
+    //SendMessage(hEdit, EM_SETMODIFY, FALSE, 0);
 
-    // Post message to clear the processing flag *after* potential EN_CHANGE
-    PostMessage(GetParent(hEdit), WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
 }
 
 
@@ -447,15 +504,19 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
     std::wstring initialContent = L"";
     bool loadedOk = true;
     if (!newTab.filePath.empty()) {
+        OutputDebugStringW((L"CreateTab: Attempting to load file: " + newTab.filePath + L"\n").c_str());
         loadedOk = LoadFileIntoEditor(hEdit, newTab.filePath.c_str(), initialContent); 
         if (!loadedOk) {
             // Handle error - maybe revert to empty tab?
+            OutputDebugStringW(L"CreateTab: Failed to load file.\n");
+
             MessageBox(hWnd, L"Failed to load file.", L"Error", MB_OK | MB_ICONERROR);
             newTab.filePath = L""; // Clear path if load failed
             newTab.fileName = L"Untitled";
             initialContent = L"";
         }
         else {
+            OutputDebugStringW((L"CreateTab: File loaded successfully. InitialContent Length: " + std::to_wstring(initialContent.length()) + L"\n").c_str());
             newTab.fileName = PathFindFileNameW(newTab.filePath.c_str()); // Update fileName from path
         }
     }
@@ -468,6 +529,9 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
         SendMessage(hEdit, EM_EMPTYUNDOBUFFER, 0, 0); // Still useful to clear default buffer
     }
 
+    OutputDebugStringW((L"CreateTab: BEFORE creating HistoryManager. InitialContent Length: " + std::to_wstring(initialContent.length()) + L"\n").c_str());
+    OutputDebugStringW((L"CreateTab: BEFORE creating HistoryManager. InitialContent Start: [" + initialContent.substr(0, 100) + L"]\n").c_str()); // Log first 100 chars
+
     // --- Create and store VersionHistoryManager ---
     newTab.historyManager = std::make_unique<VersionHistoryManager>(initialContent);
     // Initialize the baseline text for the *first* diff calculation
@@ -477,19 +541,13 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
     newTab.processingHistoryAction = false; // Not processing initially
     // --- End HistoryManager creation ---
 
-    // --- Add Idle Timer Setup ---
-    // Start timer only if creation succeeded
-    if (newTab.historyManager && newTab.hEdit) {
-        // Use the hEdit HWND cast to UINT_PTR as a unique ID for the timer associated with this tab
-        UINT_PTR timerIdentifier = reinterpret_cast<UINT_PTR>(newTab.hEdit);
-        // Note: Timer is initially set here but will be reset on first change.
-        // You could skip setting it here and only set it in EN_CHANGE,
-        // but setting it ensures idleTimerId is initialized (though to 0 is also fine).
-        // Setting it here might cause an immediate WM_TIMER if app is idle after tab creation.
-        // Let's initialize ID to 0 and let EN_CHANGE create the first timer.
-        newTab.idleTimerId = 0; // Mark as inactive initially
-    }
-    // --- End Timer Setup ---
+    newTab.historyManager = std::make_unique<VersionHistoryManager>(initialContent);
+    newTab.textAtLastHistoryPoint = initialContent;
+    newTab.textBeforeChange = initialContent; // Initialize for first EN_CHANGE
+    newTab.totalChangeSize = 0; // Initialize cumulative size
+    newTab.changesSinceLastHistoryPoint = false;
+    newTab.processingHistoryAction = false;
+    newTab.idleTimerId = 0;
 
 
 
@@ -732,7 +790,7 @@ void ShowCommandPalette(HWND hWnd)
 //        AppendMenuW(hSubMenu, MF_STRING | (canUndo ? MF_ENABLED : MF_GRAYED), ID_EDIT_UNDO, L"&Undo\tCtrl+Z");
 //        AppendMenuW(hSubMenu, MF_STRING | (canRedo ? MF_ENABLED : MF_GRAYED), ID_EDIT_REDO, L"&Redo\tCtrl+Y");
 //        AppendMenuW(hSubMenu, MF_SEPARATOR, 0, NULL);
-//        AppendMenuW(hSubMenu, MF_STRING, ID_EDIT_CREATE_VERSION, L"Create New Version");
+//        AppendMenuW(hSubMenu, MF_STRING, ID_EDIT_COMMIT, L"Create New Version");
 //        AppendMenuW(hSubMenu, MF_STRING, ID_VIEW_HISTORY, L"View &History...\tF5"); // Add History View option
 //        // Add Cut, Copy, Paste later if needed (using EM_CUT, EM_COPY, EM_PASTE)
 //        break;
@@ -778,11 +836,18 @@ bool LoadFileIntoEditor(HWND hEdit, const WCHAR* filePath, std::wstring& outCont
     // Set text in Rich Edit control
     // Set flag to ignore EN_CHANGE during programmatic text setting
     int tabIndex = -1;
-    for (int i = 0; i < openTabs.size(); ++i) {
-        if (openTabs[i].hEdit == hEdit) {
-            tabIndex = i;
-            break;
+    HWND hParentWnd = GetParent(hEdit);  //get parent window handle
+    if (hParentWnd) {
+        for (int i = 0; i < openTabs.size(); ++i) {
+            if (openTabs[i].hEdit == hEdit) {
+                tabIndex = i;
+                break;
+            }
         }
+    } 
+    else {
+        OutputDebugStringW(L"LoadFileIntoEditor: Could not get parent window handle.\n");
+        // Cannot update tab state without parent/tab index, but continue setting text
     }
     if (tabIndex != -1) openTabs[tabIndex].processingHistoryAction = true;
 
@@ -792,28 +857,43 @@ bool LoadFileIntoEditor(HWND hEdit, const WCHAR* filePath, std::wstring& outCont
     SendMessage(hEdit, EM_EMPTYUNDOBUFFER, 0, 0); // Clear RichEdit internal undo
     SendMessage(hEdit, EM_SETMODIFY, FALSE, 0);    // Mark as unmodified
 
-    // Clear the processing flag via message after setting text
-    if (tabIndex != -1) PostMessage(GetParent(hEdit), WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
+    // Update tab state after loading
+    if (tabIndex != -1) {
+        openTabs[tabIndex].textAtLastHistoryPoint = outContent;
+        openTabs[tabIndex].textBeforeChange = outContent;
+        openTabs[tabIndex].totalChangeSize = 0;
+        openTabs[tabIndex].changesSinceLastHistoryPoint = false;
+        // Post message to clear the processing flag *after* potential EN_CHANGE
+        PostMessage(hParentWnd, WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
+    }
 
     return true;
 }
 
 // Function to record a history point
-void RecordHistoryPoint(HWND hWnd, int tabIndex, const std::wstring& description) { // Added description param
+void RecordHistoryPoint(HWND hWnd, int tabIndex, const std::wstring& description) { 
     if (tabIndex < 0 || tabIndex >= openTabs.size() || !openTabs[tabIndex].historyManager) {
         return;
     }
 
     auto& tab = openTabs[tabIndex];
+    OutputDebugStringW((L"RecordHistoryPoint: Called for tab " + std::to_wstring(tabIndex) + L" with description: " + description + L"\n").c_str());
 
     // Prevent recording if editor is currently being updated by history action
-    if (tab.processingHistoryAction) return;
+    if (tab.processingHistoryAction) {
+        OutputDebugStringW(L"RecordHistoryPoint: Returning early because processingHistoryAction is true.\n");
+        return;
+    }
 
     std::wstring currentState = GetRichEditText(tab.hEdit);
 
+    OutputDebugStringW((L"RecordHistoryPoint: Comparing states:\n  Current: [" + currentState + L"]\n  LastHist:[" + tab.textAtLastHistoryPoint + L"]\n").c_str());
+
     // Avoid recording if text hasn't actually changed from last *recorded history point*
     if (currentState == tab.textAtLastHistoryPoint) {
+        OutputDebugStringW(L"RecordHistoryPoint: Returning early because currentState == textAtLastHistoryPoint.\n");
         tab.changesSinceLastHistoryPoint = false; // Reset flag even if no change recorded
+		tab.totalChangeSize = 0; // Reset total change size
         return;
     }
 
@@ -826,22 +906,31 @@ void RecordHistoryPoint(HWND hWnd, int tabIndex, const std::wstring& description
 
     // Calculate the change from the *last recorded history state*
     TextChange change = CalculateTextChange(tab.textAtLastHistoryPoint, currentState, tab.hEdit);
-    // TODO: Optionally add 'description' to TextChange or HistoryNode if needed for the UI
+
+    OutputDebugStringW((L"RecordHistoryPoint: Calculated change for recording: +" + std::to_wstring(change.insertedText.length()) + L" / -" + std::to_wstring(change.deletedText.length()) + L"\n").c_str());
 
     // --- Check if the change is non-empty ---
     if (change.insertedText.empty() && change.deletedText.empty()) {
+        OutputDebugStringW(L"RecordHistoryPoint: Returning early because calculated change is empty.\n");
         tab.changesSinceLastHistoryPoint = false; // Reset flag
         return; // Don't record no-op changes
     }
 
+    OutputDebugStringW(L"RecordHistoryPoint: Calling historyManager->recordChange...\n");
+
     // Record the change. This implicitly moves the history manager's 'currentNode' forward.
-    tab.historyManager->recordChange(change);
+    tab.historyManager->recordChange(change, description);
+
+    OutputDebugStringW(L"RecordHistoryPoint: Updating textAtLastHistoryPoint and resetting flags/size.\n");
 
     // Update the baseline for the next diff calculation to the *current* state
     tab.textAtLastHistoryPoint = currentState;
     tab.changesSinceLastHistoryPoint = false; // Reset flag, changes up to now are recorded
+	tab.totalChangeSize = 0; // Reset total change size
 
-    // Optional: Update status bar or log history event
+    OutputDebugStringW(L"RecordHistoryPoint: Successfully recorded history point.\n");
+
+    // TODO: Update status bar or log history event
     // Optional: Could prune very old history here if needed
 }
 
@@ -1225,6 +1314,22 @@ void ShowHistoryTree(HWND hWnd) {
         return;
     }
 
+    // Ensure any pending automatic changes (like significant change or idle timeout)
+    // are committed *before* showing the history or syncing.
+    auto& tab = openTabs[currentTab];
+    if (tab.changesSinceLastHistoryPoint) {
+        OutputDebugStringW(L"ShowHistoryTree: Found pending changes. Recording history point before showing dialog...\n");
+        // Kill any pending idle timer as we are committing now.
+        if (tab.idleTimerId != 0) {
+            KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
+            tab.idleTimerId = 0;
+        }
+        // Record the pending change. Use a generic "Auto" message or be more specific if possible.
+        // L"Auto (Pending Change)" or L"Auto (Before History View)" might be good descriptions.
+        RecordHistoryPoint(hWnd, currentTab, L"Auto (Pending)");
+        // Note: RecordHistoryPoint already updates textAtLastHistoryPoint etc.
+    }
+
     // --- Synchronization Step ---
     // Ensure the history manager's internal pointer matches the editor's current state
     // BEFORE showing the dialog. This is crucial for highlighting the correct item.
@@ -1349,6 +1454,8 @@ INT_PTR CALLBACK CommitMessageDlgProc(HWND hDlg, UINT message, WPARAM wParam, LP
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    /*OutputDebugStringW((L"*** WndProc Entered - Message: " + std::to_wstring(message) + L" ***\n").c_str());*/
+
     switch (message)
     {
     case WM_CREATE:
@@ -1399,37 +1506,42 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
         }
 
-        if (tabIndex != -1 && currentTab == tabIndex) { // Ensure it's the active tab's timer
+        // Process only if the timer belongs to the *currently active* tab
+        // (We generally only want idle commits for the tab being actively edited)
+        // We *could* allow idle commits for background tabs, but it might be less expected.
+        if (tabIndex != -1 && currentTab == tabIndex) {
             auto& tab = openTabs[tabIndex];
-            // Check if changes occurred and the timer is the one we set
-            if (tab.changesSinceLastHistoryPoint && reinterpret_cast<UINT_PTR>(tab.hEdit) == timerId) {
-                // Kill this specific timer instance *before* processing
-                // to prevent potential rapid re-firing if processing takes time.
-                KillTimer(hWnd, timerId);
-                tab.idleTimerId = 0; // Mark timer as inactive until reset by next change
 
-                // Now record the history point
-                RecordHistoryPoint(hWnd, tabIndex, L"Automatic (Idle)");
+            // Kill this specific timer instance *first* regardless of action
+            KillTimer(hWnd, timerId);
+            tab.idleTimerId = 0; // Mark timer as inactive
+
+            // Check if changes actually occurred since the last recorded point
+            if (tab.changesSinceLastHistoryPoint) {
+                OutputDebugStringW(L"Idle timer fired. Recording history...\n");
+                // Now record the history point because idle time elapsed *after* changes
+                RecordHistoryPoint(hWnd, tabIndex, L"Auto (Idle)");
+                // RecordHistoryPoint resets cumulativeChangeSize and changesSinceLastHistoryPoint
             }
             else {
-                // Timer fired but no changes, or wrong timer ID - just kill it
-                KillTimer(hWnd, timerId);
-                if (tab.idleTimerId!=0 && reinterpret_cast<UINT_PTR>(tab.hEdit) == timerId) {
-                    tab.idleTimerId = 0; // Mark as inactive
-                }
+                OutputDebugStringW(L"Idle timer fired, but no changes since last history point.\n");
+                // Timer fired, but changes were already committed (e.g., by threshold)
+                // or the state reverted. Do nothing.
             }
         }
         else if (tabIndex != -1) {
-            // Timer for an inactive tab fired? Should ideally not happen often if we manage timers well.
-            // Kill it just in case.
+            // Timer fired for an *inactive* tab, or timer ID mismatch somehow.
+            // Kill the timer just to be safe.
+            OutputDebugStringW(L"Idle timer fired for inactive tab or mismatch. Killing timer.\n");
             KillTimer(hWnd, timerId);
+            // Ensure the corresponding tab's ID is cleared if it matches the timerId
             if (reinterpret_cast<UINT_PTR>(openTabs[tabIndex].hEdit) == timerId) {
                 openTabs[tabIndex].idleTimerId = 0;
             }
         }
         return 0; // Indicate message processed
     }
-    break;
+    break; // End WM_TIMER
     
     case WM_NOTIFY:
         {
@@ -1493,30 +1605,74 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         tab.isModified = true; // A change occurred
                         UpdateTabTitle(currentTab);
                         UpdateWindowTitle(hWnd);
-                        tab.textBeforeChange = GetRichEditText(tab.hEdit); // Keep for CalculateTextChange
 
-                        // --- History Recording Trigger Logic ---
-                        tab.changesSinceLastHistoryPoint = true; // Mark that changes happened
+                        // *** START: Significant Change & Timer Logic ***
 
-                        // Kill previous timer for this tab, if any
-                        if (tab.idleTimerId != 0) {
-                            KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
+                        // 1. Get the current state of the editor
+                        std::wstring currentState = GetRichEditText(tab.hEdit);
+
+                        // 2. Calculate the change delta compared to the state *before* this EN_CHANGE
+                        //    Note: tab.textBeforeChange holds the state *before* this specific event.
+                        TextChange currentDeltaChange = CalculateTextChange(tab.textBeforeChange, currentState, tab.hEdit);
+
+                        // 3. Update the total change size since the last *recorded* history point
+                        size_t changeSizeThisEvent = currentDeltaChange.insertedText.length() + currentDeltaChange.deletedText.length();
+                        OutputDebugStringW((L"EN_CHANGE: Before accumulation - totalChangeSize=" + std::to_wstring(tab.totalChangeSize)
+                            + L", changeSizeThisEvent=" + std::to_wstring(changeSizeThisEvent) + L"\n").c_str());
+
+                        
+                        tab.totalChangeSize += changeSizeThisEvent;
+
+                        OutputDebugStringW((L"EN_CHANGE: After accumulation - totalChangeSize=" + std::to_wstring(tab.totalChangeSize) + L"\n").c_str());
+
+                        // 4. Update textBeforeChange to prepare for the *next* EN_CHANGE event
+                        tab.textBeforeChange = currentState;
+
+                        // 5. Mark that changes have happened since the last *recorded* point
+                        tab.changesSinceLastHistoryPoint = true;
+
+                        // 6. Check if the significant change threshold is met
+                        bool committedDueToThreshold = false;
+                        if (tab.totalChangeSize >= SIGNIFICANT_CHANGE_THRESHOLD) {
+                            OutputDebugStringW((L"EN_CHANGE: Significant change threshold MET (" + std::to_wstring(tab.totalChangeSize) + L" >= " + std::to_wstring(SIGNIFICANT_CHANGE_THRESHOLD) + L"). Attempting to record...\n").c_str());
+                            // Kill any pending idle timer immediately
+                            if (tab.idleTimerId != 0) {
+                                KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
+                                tab.idleTimerId = 0; // Mark timer as inactive
+                            }
+                            // Record the history point NOW
+                            RecordHistoryPoint(hWnd, currentTab, L"Auto (Significant Change)");
+                            // RecordHistoryPoint resets cumulativeChangeSize and changesSinceLastHistoryPoint
+                            committedDueToThreshold = true;
+                        } else{
+                                OutputDebugStringW((L"EN_CHANGE: Threshold NOT met (" + std::to_wstring(tab.totalChangeSize) + L" < " + std::to_wstring(SIGNIFICANT_CHANGE_THRESHOLD) + L").\n").c_str());
                         }
-                        // Reset/Start the idle timer
-                        UINT_PTR timerIdentifier = reinterpret_cast<UINT_PTR>(tab.hEdit);
-                        const UINT idleTimeoutMs = IDLE_HISTORY_TIMEOUT_MS; // 4 seconds - make configurable?
-                        tab.idleTimerId = SetTimer(hWnd, // Main window handles timers
-                            timerIdentifier, // Unique ID for this tab's timer (using HWND)
-                            idleTimeoutMs,
-                            nullptr);      // Use WM_TIMER in this WndProc
 
-                        // --- DO NOT CALL RecordHistoryPoint or historyManager->recordChange HERE ---
+                        // 7. If not committed by threshold, reset/start the idle timer
+                        if (!committedDueToThreshold) {
+                            // Kill previous timer for this tab, if any (ensures only one timer runs)
+                            if (tab.idleTimerId != 0) {
+                                KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
+                            }
+                            // Reset/Start the idle timer
+                            UINT_PTR timerIdentifier = reinterpret_cast<UINT_PTR>(tab.hEdit);
+                            const UINT idleTimeoutMs = IDLE_HISTORY_TIMEOUT_MS;
+                            tab.idleTimerId = SetTimer(hWnd,
+                                timerIdentifier,
+                                idleTimeoutMs,
+                                nullptr);
+                            if (tab.idleTimerId == 0) {
+                                OutputDebugStringW(L"Warning: SetTimer failed in EN_CHANGE!\n");
+                            }
+                        }
+                        // *** END: Significant Change & Timer Logic ***
+                    }
+                    else {
+                        OutputDebugStringW(L"EN_CHANGE: Skipping due to processingHistoryAction flag.\n");
                     }
                 }
                 else if (pnmh->code == EN_SELCHANGE) {
                     // Handle selection change if needed (e.g., update status bar)
-                    // LPNMSELCHANGE lpnmsc = (LPNMSELCHANGE)lParam;
-                    // Can get lpnmsc->chrg.cpMin, lpnmsc->chrg.cpMax
                 }
             }
         }
@@ -1672,9 +1828,93 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 ShowHistoryTree(hWnd);
             }
             break;
+        
+        case ID_HISTORY_PREVIOUS: // Ctrl + Alt + Left
+            if (currentTab >= 0 && currentTab < openTabs.size()) {
+                auto& tab = openTabs[currentTab];
+                if (tab.hEdit && tab.historyManager && tab.historyManager->canUndo()) {
+                    // 1. Move internal pointer
+                    if (tab.historyManager->moveCurrentNodeToParent()) {
+                        // 2. Get new state and node
+                        std::shared_ptr<const HistoryNode> newNode = tab.historyManager->getCurrentNode();
+                        std::wstring newState = tab.historyManager->getCurrentState(); // Or reconstructStateToNode(newNode)
+
+                        // 3. Update editor and tab state (using the modified SetRichEditText)
+                        // SetRichEditText now handles updating textAtLastHistoryPoint etc.
+                        SetRichEditText(tab.hEdit, newState, newNode);
+                    }
+                    else {
+                        OutputDebugStringW(L"ID_HISTORY_PREVIOUS: moveCurrentNodeToParent failed unexpectedly.\n");
+                    }
+                }
+                else {
+                    // Optionally provide feedback (e.g., status bar message or Beep)
+                    MessageBeep(MB_ICONASTERISK);
+                }
+            }
+            break; // End ID_HISTORY_PREVIOUS
+
+        case ID_HISTORY_NEXT_CHILD: // Ctrl + Alt + Right
+            if (currentTab >= 0 && currentTab < openTabs.size()) {
+                auto& tab = openTabs[currentTab];
+                if (tab.hEdit && tab.historyManager && tab.historyManager->canRedo()) {
+                    std::vector<std::wstring> branches = tab.historyManager->getRedoBranchDescriptions();
+
+                    if (branches.empty()) {
+                        // Should not happen if canRedo() is true, but check anyway
+                        MessageBeep(MB_ICONASTERISK);
+                    }
+                    else if (branches.size() == 1) {
+                        // --- Only one child: Move directly ---
+                        if (tab.historyManager->moveCurrentNodeToChild(0)) { // Move to the first (only) child
+                            std::shared_ptr<const HistoryNode> newNode = tab.historyManager->getCurrentNode();
+                            std::wstring newState = tab.historyManager->getCurrentState();
+                            SetRichEditText(tab.hEdit, newState, newNode);
+                        }
+                        else {
+                            OutputDebugStringW(L"ID_HISTORY_NEXT_CHILD: moveCurrentNodeToChild(0) failed unexpectedly.\n");
+                        }
+                    }
+                    else {
+                        // --- Multiple children: Show dialog ---
+                        ChooseChildDialogParams params;
+                        params.historyManager = tab.historyManager.get(); // Pass raw pointer
+                        params.descriptions = branches; // Copy descriptions
+                        params.selectedIndex = -1;
+
+                        INT_PTR dlgResult = DialogBoxParam(
+                            hInst,
+                            MAKEINTRESOURCE(IDD_CHOOSE_CHILD_COMMIT),
+                            hWnd, // Parent window
+                            ChooseChildCommitDlgProc,
+                            (LPARAM)&params
+                        );
+
+                        if (dlgResult == IDOK && params.selectedIndex >= 0 && params.selectedIndex < branches.size()) {
+                            // User clicked OK and selected a valid index
+                            // Move to the selected child node
+                            if (tab.historyManager->moveCurrentNodeToChild(params.selectedIndex)) {
+                                std::shared_ptr<const HistoryNode> newNode = tab.historyManager->getCurrentNode();
+                                std::wstring newState = tab.historyManager->getCurrentState();
+                                SetRichEditText(tab.hEdit, newState, newNode);
+                            }
+                            else {
+                                MessageBoxW(hWnd, L"Failed to switch to the selected version.", L"Error", MB_OK | MB_ICONERROR);
+                            }
+                        }
+                        // else: User cancelled or error, do nothing
+                    }
+                }
+                else {
+                    // Cannot redo
+                    MessageBeep(MB_ICONASTERISK);
+                }
+            }
+            break; // End ID_HISTORY_NEXT_CHILD
+
 
             // command for manual commit
-        case ID_EDIT_CREATE_VERSION:
+        case ID_EDIT_COMMIT:
             if (currentTab >= 0 && currentTab < openTabs.size()) {
                 auto& tab = openTabs[currentTab];
                 if (tab.hEdit && tab.historyManager) {
@@ -1722,12 +1962,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         tab.changesSinceLastHistoryPoint = false; // Reset flag
 
                         // 7. Provide feedback
-                        MessageBoxW(hWnd, (L"Version created." + (userCommitMessage.empty() ? L"" : L"\nMessage: " + userCommitMessage)).c_str(), L"History", MB_OK | MB_ICONINFORMATION);
+                        MessageBoxW(hWnd, (L"Version created." + (userCommitMessage.empty() ? L"" : L"\nMessage: " + userCommitMessage)).c_str(), L"Commit", MB_OK | MB_ICONINFORMATION);
                     }
                     // else: User cancelled (dlgResult == IDCANCEL or error), do nothing.
                 }
             }
-            break; // End ID_EDIT_CREATE_VERSION
+            break; // End ID_EDIT_COMMIT
 
             // --- THEME ---
         case IDM_THEME_LIGHT: /* ... */ break;
@@ -1827,6 +2067,72 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     }
     return (INT_PTR)FALSE;
 }
+
+
+INT_PTR CALLBACK ChooseChildCommitDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    ChooseChildDialogParams* pParams = nullptr;
+
+    if (message == WM_INITDIALOG) {
+        pParams = reinterpret_cast<ChooseChildDialogParams*>(lParam);
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)pParams);
+
+        HWND hList = GetDlgItem(hDlg, IDC_CHILD_COMMIT_LIST);
+        if (hList && pParams) {
+            // Populate the list box
+            for (const auto& desc : pParams->descriptions) {
+                SendMessage(hList, LB_ADDSTRING, 0, (LPARAM)desc.c_str());
+            }
+            // Select the first item by default
+            if (!pParams->descriptions.empty()) {
+                SendMessage(hList, LB_SETCURSEL, 0, 0);
+            }
+        }
+        return (INT_PTR)TRUE;
+    }
+
+    pParams = reinterpret_cast<ChooseChildDialogParams*>(GetWindowLongPtr(hDlg, DWLP_USER));
+    if (!pParams) return (INT_PTR)FALSE; // Should have params by now
+
+    switch (message) {
+    case WM_COMMAND: {
+        int wmId = LOWORD(wParam);
+        int wmEvent = HIWORD(wParam);
+
+        if (wmId == IDOK) {
+            HWND hList = GetDlgItem(hDlg, IDC_CHILD_COMMIT_LIST);
+            int idx = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
+            if (idx != LB_ERR) {
+                pParams->selectedIndex = idx; // Store the selected index
+                EndDialog(hDlg, IDOK);       // Close dialog indicating success
+            }
+            else {
+                // No selection, maybe show a message? Or just do nothing.
+                MessageBoxW(hDlg, L"Please select a version.", L"Selection Required", MB_OK | MB_ICONINFORMATION);
+            }
+            return (INT_PTR)TRUE;
+        }
+        else if (wmId == IDCANCEL) {
+            EndDialog(hDlg, IDCANCEL);
+            return (INT_PTR)TRUE;
+        }
+        else if (wmId == IDC_CHILD_COMMIT_LIST && wmEvent == LBN_DBLCLK) {
+            // Treat double-click as OK
+            PostMessage(hDlg, WM_COMMAND, IDOK, 0);
+            return (INT_PTR)TRUE;
+        }
+        break; // End WM_COMMAND
+    }
+    case WM_CLOSE: // Handle closing via 'X' button
+        EndDialog(hDlg, IDCANCEL);
+        return (INT_PTR)TRUE;
+
+    case WM_DESTROY:
+        SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)nullptr);
+        break;
+    }
+    return (INT_PTR)FALSE;
+}
+
 
 // Command Palette dialog procedure 
 INT_PTR CALLBACK CommandPaletteProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)

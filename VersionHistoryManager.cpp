@@ -137,20 +137,48 @@ bool VersionHistoryManager::moveCurrentNodeToChild(size_t childIndex) {
 
 std::vector<std::wstring> VersionHistoryManager::getRedoBranchDescriptions() const {
     std::vector<std::wstring> descriptions;
-    if (currentNode && !currentNode->children.empty()) {
-        descriptions.reserve(currentNode->children.size()); // Optimize allocation
-        for (const auto& child : currentNode->children) {
-            if (child) { // Ensure child pointer is valid
-                // Create a simple description using change details
-                std::wstring desc = L"Change @ pos " + std::to_wstring(child->changeFromParent.position)
-                    + L" (+" + std::to_wstring(child->changeFromParent.insertedText.length())
-                    + L" / -" + std::to_wstring(child->changeFromParent.deletedText.length())
-                    + L")";
-                // Consider adding timestamp here for more context if needed
-                descriptions.push_back(desc);
-            }
-        }
+    if (!currentNode || currentNode->children.empty()) {
+        return descriptions; // Return empty vector if no children
     }
+
+    descriptions.reserve(currentNode->children.size()); // Optimize allocation
+
+    for (const auto& child : currentNode->children) {
+        if (!child) continue; // Ensure child pointer is valid
+
+        std::wstring description;
+        std::wstring commitMsg = child->commitMessage; // Get the commit message
+
+        // Format timestamp
+        time_t tt = std::chrono::system_clock::to_time_t(child->timestamp);
+        tm local_tm;
+        localtime_s(&local_tm, &tt);
+        char timeBuffer[80];
+        strftime(timeBuffer, sizeof(timeBuffer), "%H:%M:%S", &local_tm); // e.g., 14:35:10
+        // Or use: "%Y-%m-%d %H:%M:%S" for full date and time
+        std::string timestampStr(timeBuffer);
+        std::wstring wTimestampStr(timestampStr.begin(), timestampStr.end());
+
+        // Format: [Time] Commit Message (+Ins/-Del)
+        description = L"[" + wTimestampStr + L"]";
+
+        // Add commit message if present, otherwise indicate Auto
+        if (!commitMsg.empty()) {
+            description += L" " + commitMsg;
+        }
+        else {
+            // Check if the default message from recordChange was used
+            // For now, let's assume an empty message implies Auto.
+            description += L" (Auto)"; // Indicate automatic commit if no message
+        }
+
+        description += L" (+" + std::to_wstring(child->changeFromParent.insertedText.length())
+            + L" / -" + std::to_wstring(child->changeFromParent.deletedText.length())
+            + L")";
+
+        descriptions.push_back(description);
+    }
+
     return descriptions;
 }
 
@@ -249,9 +277,29 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
             // and states are cached when children are processed. If it does,
             // reconstruct and cache. This indicates potential issue elsewhere.
             // For robustness:
+            OutputDebugStringW(L"findNodeMatchingState: Cache miss, reconstructing state...\n");
             nodeState = reconstructStateToNode(node);
             stateCache[node] = nodeState;
             // Log warning? std::cerr << "Warning: Cache miss in findNodeMatchingState BFS for node." << std::endl;
+        }
+
+        if (nodeState != targetState) {
+            // Only log if they don't match to avoid excessive output
+            OutputDebugStringW(L"findNodeMatchingState: Comparing states:\n");
+            OutputDebugStringW((L"  Editor Target State : [" + targetState + L"] (Length: " + std::to_wstring(targetState.length()) + L")\n").c_str());
+            OutputDebugStringW((L"  Reconstructed State : [" + nodeState + L"] (Length: " + std::to_wstring(nodeState.length()) + L")\n").c_str());
+            // Optional: Add code here to compare character by character and log the first difference
+            for (size_t i = 0; i < std::min(targetState.length(), nodeState.length()); ++i) {
+                if (targetState[i] != nodeState[i]) {
+                    OutputDebugStringW((L"  Mismatch found at index " + std::to_wstring(i)
+                        + L": Editor char=" + std::to_wstring(targetState[i])
+                        + L", Reconstructed char=" + std::to_wstring(nodeState[i]) + L"\n").c_str());
+                    break;
+                }
+            }
+            if (targetState.length() != nodeState.length()) {
+                OutputDebugStringW(L"  States have different lengths.\n");
+            }
         }
 
 
@@ -261,6 +309,7 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
             // Note: If multiple nodes can have identical text states, this finds
             // the first one encountered in BFS. You might need different logic
             // (e.g., find latest timestamp) if specific duplicates must be handled.
+            OutputDebugStringW(L"findNodeMatchingState: FOUND matching node.\n"); 
             return node;
         }
 
@@ -279,6 +328,7 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
     }
 
     // Target state was not found anywhere in the reachable history tree.
+    OutputDebugStringW(L"findNodeMatchingState: Target state NOT found after searching tree.\n");
     return nullptr;
 }
 
