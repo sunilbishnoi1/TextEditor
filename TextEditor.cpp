@@ -22,7 +22,8 @@
 #define IDLE_HISTORY_TIMEOUT_MS 4000
 #define SIGNIFICANT_CHANGE_THRESHOLD 101
 
-// --- Theme Support ---
+// --- Theme Support -------------------------------------------------------------------------------
+
 enum class Theme {
     Light,
     Dark,
@@ -38,6 +39,7 @@ static COLORREF g_darkText  = RGB(224,224,224);
 void ApplyThemeToRichEdit(HWND hEdit);
 void ApplyTheme(HWND hWnd);
 
+ //-----------------------------------------------------------------------------=--------------------------------
 
 // Global Variables:
 HINSTANCE hInst;
@@ -262,6 +264,8 @@ HWND CreateRichEdit(HWND hWnd)
         MessageBox(hWnd, L"Failed to create Rich Edit control.", L"Error", MB_OK | MB_ICONERROR);
         return NULL;
     }
+
+// ---------------------------------------------------------------------------------------------------------------------------------
 	
 // Apply theme to a single RichEdit control
 void ApplyThemeToRichEdit(HWND hEdit) {
@@ -297,6 +301,9 @@ void ApplyTheme(HWND hWnd) {
     InvalidateRect(hWnd, NULL, TRUE);
 }
 
+
+// ------------------------------------------------------------------------------------
+
 // In WndProc: handle WM_CTLCOLOR* messages
 // inside WndProc switch(message):
 // case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
@@ -324,7 +331,8 @@ void ApplyTheme(HWND hWnd) {
 // [Insert the full rest of your code here, including WndProc, dialog procs, etc.,
 // with the snippets above merged into the proper places.]
 
-	
+// ---------------------------------------------------------------------------------------------------------------------------------------
+
     // Set custom font (e.g., Consolas 10pt)
     LOGFONT lf = { 0 };
     wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Consolas");
