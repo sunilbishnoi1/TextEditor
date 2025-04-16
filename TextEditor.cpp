@@ -22,6 +22,22 @@
 #define IDLE_HISTORY_TIMEOUT_MS 4000
 #define SIGNIFICANT_CHANGE_THRESHOLD 101
 
+// --- Theme Support ---
+enum class Theme {
+    Light,
+    Dark,
+    System
+};
+static Theme g_currentTheme = Theme::System;
+static COLORREF g_lightBg   = RGB(255,255,255);
+static COLORREF g_lightText = RGB(  0,  0,  0);
+static COLORREF g_darkBg    = RGB( 32, 32, 32);
+static COLORREF g_darkText  = RGB(224,224,224);
+
+// Forward declarations
+void ApplyThemeToRichEdit(HWND hEdit);
+void ApplyTheme(HWND hWnd);
+
 
 // Global Variables:
 HINSTANCE hInst;
@@ -246,7 +262,69 @@ HWND CreateRichEdit(HWND hWnd)
         MessageBox(hWnd, L"Failed to create Rich Edit control.", L"Error", MB_OK | MB_ICONERROR);
         return NULL;
     }
+	
+// Apply theme to a single RichEdit control
+void ApplyThemeToRichEdit(HWND hEdit) {
+    if (!hEdit) return;
+    COLORREF bg = (g_currentTheme == Theme::Dark ? g_darkBg : g_lightBg);
+    SendMessage(hEdit, EM_SETBKGNDCOLOR, 0, (LPARAM)bg);
+    CHARFORMAT2 cf = { sizeof(cf) };
+    cf.dwMask = CFM_COLOR;
+    cf.crTextColor = (g_currentTheme == Theme::Dark ? g_darkText : g_lightText);
+    SendMessage(hEdit, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
+}
 
+	// Apply theme across the entire UI
+	
+void ApplyTheme(HWND hWnd) {
+    // Main window background
+    static HBRUSH hbrOld = NULL;
+    HBRUSH hbr = CreateSolidBrush(
+        g_currentTheme == Theme::Dark ? g_darkBg : g_lightBg
+    );
+    if (hbrOld) DeleteObject(hbrOld);
+    hbrOld = hbr;
+    SetClassLongPtr(hWnd, GCLP_HBRBACKGROUND, (LONG_PTR)hbr);
+
+    // Tab control redraw
+    InvalidateRect(hTabCtrl, NULL, TRUE);
+
+    // All open RichEdits
+    for (auto& tab : openTabs) {
+        ApplyThemeToRichEdit(tab.hEdit);
+    }
+
+    InvalidateRect(hWnd, NULL, TRUE);
+}
+
+// In WndProc: handle WM_CTLCOLOR* messages
+// inside WndProc switch(message):
+// case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+//      HDC hdc = (HDC)wParam;
+//      HWND ctl = (HWND)lParam;
+//      COLORREF bg = (g_currentTheme==Theme::Dark?g_darkBg:g_lightBg);
+//      COLORREF fg = (g_currentTheme==Theme::Dark?g_darkText:g_lightText);
+//      SetBkColor(hdc,bg);
+//      SetTextColor(hdc,fg);
+//      static HBRUSH hbrCtl = NULL;
+//      if(hbrCtl) DeleteObject(hbrCtl);
+//      hbrCtl = CreateSolidBrush(bg);
+//      return (LRESULT)hbrCtl;
+
+// Then in WM_CREATE of WndProc, after creating initial tab:
+// ApplyTheme(hWnd);
+
+// And in WM_COMMAND install:
+// case IDM_THEME_LIGHT: g_currentTheme=Theme::Light; ApplyTheme(hWnd); break;
+// case IDM_THEME_DARK:  g_currentTheme=Theme::Dark;  ApplyTheme(hWnd); break;
+// case IDM_THEME_SYSTEM:g_currentTheme=Theme::System;ApplyTheme(hWnd); break;
+
+// The rest of your existing code continues unchanged, integrating the above helpers where indicated...
+
+// [Insert the full rest of your code here, including WndProc, dialog procs, etc.,
+// with the snippets above merged into the proper places.]
+
+	
     // Set custom font (e.g., Consolas 10pt)
     LOGFONT lf = { 0 };
     wcscpy_s(lf.lfFaceName, LF_FACESIZE, L"Consolas");
