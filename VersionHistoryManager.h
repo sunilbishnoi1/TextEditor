@@ -3,15 +3,15 @@
 #define NOMINMAX // Prevent Windows headers from defining min/max macros
 
 #include <memory>       // For std::shared_ptr, std::weak_ptr
-#include <string>       // For std::wstring
-#include <vector>       // For std::vector
-#include <optional>     // For std::optional
-#include <stack>        // For std::stack
-#include <queue>        // For std::queue
-#include <map>          // For std::map
-#include <chrono>       // For std::chrono
-#include <limits>       // For std::numeric_limits
-#include <stdexcept>    // For std::invalid_argument
+#include <string>       
+#include <vector>       
+#include <optional>     
+#include <stack>        
+#include <queue>        
+#include <map>          
+#include <chrono>       
+#include <limits>       
+#include <stdexcept>    
 
 // First include TextChange.h as it doesn't depend on HistoryNode
 #include "TextChange.h"
@@ -47,11 +47,17 @@ public:
     bool moveCurrentNodeToChild(size_t childIndex = std::numeric_limits<size_t>::max());
     std::vector<std::wstring> getRedoBranchDescriptions() const;
     std::wstring switchToNode(std::shared_ptr<HistoryNode> targetNode);
+    std::wstring reconstructStateToNode(std::shared_ptr<const HistoryNode> targetNode) const;
     std::wstring getCurrentState() const;
+    // History Modification
+    bool deleteNode(std::shared_ptr<HistoryNode> nodeToDelete); // Use non-const shared_ptr as we modify the tree
     std::shared_ptr<HistoryNode> findNodeMatchingState(const std::wstring& state) const;
     std::shared_ptr<const HistoryNode> getHistoryTreeRoot() const;
     std::shared_ptr<const HistoryNode> getCurrentNode() const;
-    std::wstring reconstructStateToNode(std::shared_ptr<const HistoryNode> targetNode) const;
+
+    // Helper to get the *non-const* current node if modification is needed
+    // Be careful using this, primarily for internal operations like deletion checks.
+    std::shared_ptr<HistoryNode> getMutableCurrentNode();
 
 private:
     // Internal State
@@ -63,4 +69,3 @@ private:
     static std::wstring applyChangeToString(const std::wstring& text, const TextChange& change);
 };
 
-//#endif // VERSION_HISTORY_MANAGER_H

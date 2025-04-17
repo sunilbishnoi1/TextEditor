@@ -1,5 +1,3 @@
-//#ifndef HISTORY_NODE_H
-//#define HISTORY_NODE_H
 #pragma once
 
 #include <vector>
@@ -36,5 +34,3 @@ private:
     // Friend declaration allows VersionHistoryManager access if needed for future optimizations
     friend class VersionHistoryManager;
 };
-
-//#endif // HISTORY_NODE_H

@@ -28,7 +28,6 @@ HINSTANCE hInst;
 WCHAR szTitle[MAX_LOADSTRING];
 WCHAR szWindowClass[MAX_LOADSTRING];
 HWND hTabCtrl;
-HWND hToolBar;
 HWND g_hWnd = NULL;
 
 struct EditorTabInfo {
@@ -59,7 +58,7 @@ struct HistoryDialogParams {
     HWND hParent = NULL; // Main window handle
     // Map to associate TreeView items with their corresponding HistoryNode shared_ptrs
     // This is safer than storing pointers directly in lParam.
-    std::map<HTREEITEM, std::shared_ptr<const HistoryNode>> treeItemNodeMap;
+    std::map<HTREEITEM, std::shared_ptr<HistoryNode>> treeItemNodeMap;
     // Store the node that corresponds to the state currently shown in the editor when the dialog opened
     std::shared_ptr<const HistoryNode> nodeAtEditorState = nullptr;
 };
@@ -88,21 +87,18 @@ INT_PTR CALLBACK    ChooseChildCommitDlgProc(HWND hDlg, UINT message, WPARAM wPa
 void                CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath);
 void                SwitchToTab(int index);
 void                CloseTab(int index);
-void                CreateToolbar(HWND hWnd);
 void                CreateTabControl(HWND hWnd);
 HWND                CreateRichEdit(HWND hWnd);
 void                ResizeControls(HWND hWnd);
 void                ShowCommandPalette(HWND hWnd);
-void                ShowPopupMenu(HWND hWnd, int menuId, int x, int y);
 bool                LoadFileIntoEditor(HWND hEdit, const WCHAR* filePath, std::wstring&);
 bool                SaveEditorContent(int tabIndex, bool saveAs);
 void                UpdateTabTitle(int index);
-
-void                ApplyChangeToRichEdit(HWND hEdit, const TextChange& change); 
 std::wstring        GetRichEditText(HWND hEdit); 
 TextChange          CalculateTextChange(const std::wstring& before, const std::wstring& after, HWND hEdit); 
 void                UpdateWindowTitle(HWND hWnd); 
 void                ShowHistoryTree(HWND hWnd); // history UI 
+
 
 
 const WCHAR* commands[] = {
@@ -181,49 +177,8 @@ bool InitInstance(HINSTANCE hInstance, int nCmdShow)
     return TRUE;
 }
 
-void CreateToolbar(HWND hWnd)
-{
-    // Create toolbar
-    hToolBar = CreateWindowEx(0, TOOLBARCLASSNAME, NULL,
-        WS_CHILD | WS_VISIBLE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS | CCS_TOP, 
-        0, 0, 0, 0, hWnd, (HMENU)IDC_TOOLBAR, hInst, NULL);
-
-    //// Add buttons - Using TBSTYLE_DROPDOWN for menus
-    //TBBUTTON tbb[4];
-    //ZeroMemory(tbb, sizeof(tbb));
-
-    //// File dropdown
-    //tbb[0].idCommand = ID_FILE_NEW; // Use ID_FILE_NEW as placeholder ID for the button itself
-    //tbb[0].fsState = TBSTATE_ENABLED;
-    //tbb[0].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
-    //tbb[0].iString = (INT_PTR)L"File";
-
-    //// Theme dropdown
-    //tbb[1].idCommand = IDM_THEME_MENU;
-    //tbb[1].fsState = TBSTATE_ENABLED;
-    //tbb[1].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
-    //tbb[1].iString = (INT_PTR)L"Theme";
-
-    //// Help dropdown
-    //tbb[2].idCommand = IDM_ABOUT; // Placeholder ID
-    //tbb[2].fsState = TBSTATE_ENABLED;
-    //tbb[2].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN; 
-    //tbb[2].iString = (INT_PTR)L"Help";
-
-    ////EDIT dropdown
-    //tbb[3].idCommand = ID_EDIT_UNDO; // Placeholder ID for the button itself
-    //tbb[3].fsState = TBSTATE_ENABLED;
-    //tbb[3].fsStyle = BTNS_BUTTON | BTNS_AUTOSIZE | BTNS_DROPDOWN;
-    //tbb[3].iString = (INT_PTR)L"Edit";
-
-    //SendMessage(hToolBar, TB_BUTTONSTRUCTSIZE, (WPARAM)sizeof(TBBUTTON), 0);
-    //SendMessage(hToolBar, TB_ADDBUTTONS, (WPARAM)4, (LPARAM)&tbb);
-    /*SendMessage(hToolBar, TB_AUTOSIZE, 0, 0);*/  //this might need later
-}
-
 void CreateTabControl(HWND hWnd)
 {
-    // Create tab control
     hTabCtrl = CreateWindowEx(0, WC_TABCONTROL, NULL,
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | TCS_FOCUSNEVER | TCS_TOOLTIPS, 
         0, 0, 0, 0, hWnd, (HMENU)IDC_TABCTRL, hInst, NULL);
@@ -280,6 +235,7 @@ HWND CreateRichEdit(HWND hWnd)
     return hEdit;
 }
 
+
 std::wstring GetRichEditText(HWND hEdit) {
     if (!hEdit) return L"";
     int textLen = GetWindowTextLengthW(hEdit);
@@ -292,64 +248,11 @@ std::wstring GetRichEditText(HWND hEdit) {
     return buffer;
 }
 
-//void ApplyChangeToRichEdit(HWND hEdit, const TextChange& change) {
-//    if (!hEdit) return;
-//
-//    // This function needs to apply the change *without* triggering
-//    // another EN_CHANGE that our history manager would record.
-//    // We'll use a flag in the EditorTabInfo for this.
-//
-//    // Find the tab associated with this hEdit
-//    int tabIndex = -1;
-//    for (int i = 0; i < openTabs.size(); ++i) {
-//        if (openTabs[i].hEdit == hEdit) {
-//            tabIndex = i;
-//            break;
-//        }
-//    }
-//    if (tabIndex == -1) return; // Should not happen
-//
-//    // Set flag to ignore the upcoming EN_CHANGE
-//    openTabs[tabIndex].processingChange = true;
-//
-//    // --- Apply the change ---
-//    // 1. Set selection to the area to be deleted
-//    CHARRANGE cr;
-//    cr.cpMin = (LONG)change.position;
-//    cr.cpMax = (LONG)(change.position + change.deletedText.length());
-//    SendMessage(hEdit, EM_EXSETSEL, 0, (LPARAM)&cr);
-//
-//    // 2. Replace selection with the inserted text
-//    SendMessage(hEdit, EM_REPLACESEL, TRUE, (LPARAM)change.insertedText.c_str()); // TRUE enables undo (but we disabled it globally)
-//
-//    // 3. Optionally restore cursor position (if stored in TextChange)
-//    if (change.cursorPositionAfter != (size_t)-1) { // Use -1 or similar sentinel if not storing it
-//        cr.cpMin = cr.cpMax = (LONG)change.cursorPositionAfter;
-//        SendMessage(hEdit, EM_EXSETSEL, 0, (LPARAM)&cr);
-//    }
-//    // --- End Apply Change ---
-//
-//    // Crucially, clear the processing flag *after* the changes settle
-//    // Post a custom message to clear the flag slightly later, ensuring
-//    // the EN_CHANGE (if any) is processed first while the flag is true.
-//    // Define WM_POST_APPLY_CHANGE somewhere (e.g., resource.h or locally)
-//#define WM_POST_APPLY_CHANGE (WM_USER + 100)
-//    PostMessage(GetParent(hEdit), WM_POST_APPLY_CHANGE, (WPARAM)hEdit, 0);
-//
-//
-//    // Update modification status (applying undo/redo usually reverts to a saved state)
-//    // This logic needs refinement: check if the new state matches the last saved state.
-//    // For now, assume undo/redo makes it potentially "modified" relative to the file.
-//    // A better approach tracks the 'saved' node in the history.
-//    openTabs[tabIndex].isModified = true; // Simplistic approach
-//    UpdateWindowTitle(GetParent(hEdit)); // Update window title [*] indicator
-//}
 
 TextChange CalculateTextChange(const std::wstring& before, const std::wstring& after, HWND hEdit) {
     // This is a VERY basic diff implementation. For a real editor,
     // use a proper diff algorithm (e.g., Myers diff).
     // This basic version finds the first and last differing characters.
-    OutputDebugStringW((L"CalculateTextChange:\n  Before: [" + before + L"]\n  After:  [" + after + L"]\n").c_str());
 
     size_t firstDiff = 0;
     while (firstDiff < before.length() && firstDiff < after.length() && before[firstDiff] == after[firstDiff]) {
@@ -370,11 +273,6 @@ TextChange CalculateTextChange(const std::wstring& before, const std::wstring& a
     CHARRANGE cr;
     SendMessage(hEdit, EM_EXGETSEL, 0, (LPARAM)&cr);
     size_t cursorPosAfter = cr.cpMax; // Use end of selection as cursor pos
-
-    // Log calculated results
-    OutputDebugStringW((L"  Result:\n    Pos: " + std::to_wstring(firstDiff)
-        + L"\n    Inserted: [" + insertedText + L"] (" + std::to_wstring(insertedText.length()) + L" chars)"
-        + L"\n    Deleted:  [" + deletedText + L"] (" + std::to_wstring(deletedText.length()) + L" chars)\n").c_str());
 
     return TextChange(firstDiff, insertedText, deletedText, cursorPosAfter);
 }
@@ -484,7 +382,7 @@ void UpdateWindowTitle(HWND hWnd) {
     if (currentTab >= 0 && currentTab < openTabs.size()) {
         title += L" - " + openTabs[currentTab].fileName;
         if (openTabs[currentTab].isModified) {
-            title += L" [*]";
+            title += L" *";
         }
     }
     SetWindowTextW(hWnd, title.c_str());
@@ -504,11 +402,9 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
     std::wstring initialContent = L"";
     bool loadedOk = true;
     if (!newTab.filePath.empty()) {
-        OutputDebugStringW((L"CreateTab: Attempting to load file: " + newTab.filePath + L"\n").c_str());
         loadedOk = LoadFileIntoEditor(hEdit, newTab.filePath.c_str(), initialContent); 
         if (!loadedOk) {
             // Handle error - maybe revert to empty tab?
-            OutputDebugStringW(L"CreateTab: Failed to load file.\n");
 
             MessageBox(hWnd, L"Failed to load file.", L"Error", MB_OK | MB_ICONERROR);
             newTab.filePath = L""; // Clear path if load failed
@@ -516,7 +412,6 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
             initialContent = L"";
         }
         else {
-            OutputDebugStringW((L"CreateTab: File loaded successfully. InitialContent Length: " + std::to_wstring(initialContent.length()) + L"\n").c_str());
             newTab.fileName = PathFindFileNameW(newTab.filePath.c_str()); // Update fileName from path
         }
     }
@@ -528,9 +423,6 @@ void CreateTab(HWND hWnd, const WCHAR* title, const WCHAR* filePath ) {
         SendMessage(hEdit, EM_SETMODIFY, FALSE, 0);
         SendMessage(hEdit, EM_EMPTYUNDOBUFFER, 0, 0); // Still useful to clear default buffer
     }
-
-    OutputDebugStringW((L"CreateTab: BEFORE creating HistoryManager. InitialContent Length: " + std::to_wstring(initialContent.length()) + L"\n").c_str());
-    OutputDebugStringW((L"CreateTab: BEFORE creating HistoryManager. InitialContent Start: [" + initialContent.substr(0, 100) + L"]\n").c_str()); // Log first 100 chars
 
     // --- Create and store VersionHistoryManager ---
     newTab.historyManager = std::make_unique<VersionHistoryManager>(initialContent);
@@ -669,20 +561,9 @@ void ResizeControls(HWND hWnd)
     RECT rcClient;
     GetClientRect(hWnd, &rcClient);
 
-
- //   /*RECT rcToolBar;
- //   int toolbarHeight = 0;
- //   if (GetWindowRect(hToolBar, &rcToolBar)) {
- //       toolbarHeight = rcToolBar.bottom - rcToolBar.top;
- //   }*/
-	//int toolbarHeight = 40; // adjust as needed, 28 pixels
-
-
 	int tabHeight = 22; // adjust as needed
 
     HDWP hdwp = BeginDeferWindowPos(2); // Toolbar + TabControl + Editors
-
-    /*if (hdwp) hdwp = DeferWindowPos(hdwp, hToolBar, NULL, 0, 0, rcClient.right, toolbarHeight, SWP_NOZORDER | SWP_NOACTIVATE);*/
     if (hdwp) {
         hdwp = DeferWindowPos(hdwp, hTabCtrl, NULL, 0, 0, rcClient.right, tabHeight,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -713,9 +594,6 @@ void ResizeControls(HWND hWnd)
                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             }
         }
-        else {
-            OutputDebugStringW(L"ResizeControls: Active editor handle is NULL!\n");
-        }
     }
     if (hdwp) EndDeferWindowPos(hdwp);
 
@@ -744,66 +622,6 @@ void ShowCommandPalette(HWND hWnd)
     DialogBox(hInst, MAKEINTRESOURCE(IDD_COMMANDPALETTE), hWnd, CommandPaletteProc);
 }
 
-//this function isn't really needed as we already had created Menu in .rc file, but I have added it for future use
-//void ShowPopupMenu(HWND hWnd, int buttonId, int x, int y)
-//{
-//    //HMENU hMenu = LoadMenu(hInst, MAKEINTRESOURCE(IDC_TEXTEDITOR)); // Load base menu resource (if defined)
-//    HMENU hMenu = CreateMenu(); // Simpler to always create dynamically
-//    HMENU hSubMenu = NULL;
-//
-//    switch (buttonId) {
-//    case ID_FILE_NEW: // Assuming ID_FILE_NEW is the command ID of the "File" toolbar button
-//        hSubMenu = CreatePopupMenu();
-//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_NEW, L"&New\tCtrl+T");
-//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_OPEN, L"&Open...\tCtrl+O");
-//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_SAVE, L"&Save\tCtrl+S");
-//        AppendMenu(hSubMenu, MF_STRING, ID_FILE_SAVEAS, L"Save &As...");
-//        AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
-//        AppendMenu(hSubMenu, MF_STRING, ID_CLOSE_TAB, L"&Close Tab\tCtrl+W");
-//        AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
-//        AppendMenu(hSubMenu, MF_STRING, IDM_EXIT, L"E&xit");
-//        break;
-//
-//    case IDM_THEME_MENU: // Command ID for the "Theme" button
-//        hSubMenu = CreatePopupMenu();
-//        // TODO: Add check marks based on current theme
-//        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_LIGHT, L"&Light");
-//        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_DARK, L"&Dark");
-//        AppendMenu(hSubMenu, MF_STRING, IDM_THEME_SYSTEM, L"&System Default");
-//        break;
-//
-//    case IDM_ABOUT: // Command ID for the "Help" button
-//        hSubMenu = CreatePopupMenu();
-//        AppendMenu(hSubMenu, MF_STRING, IDM_ABOUT, L"&About TextEditor...");
-//        // Add other help items if needed
-//        break;
-//
-//    case ID_EDIT_UNDO: // "Edit" button ID
-//        hSubMenu = CreatePopupMenu();
-//        // Check if undo/redo is possible for the current tab
-//        bool canUndo = false;
-//        bool canRedo = false;
-//        if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
-//            canUndo = openTabs[currentTab].historyManager->canUndo();
-//            canRedo = openTabs[currentTab].historyManager->canRedo();
-//        }
-//        AppendMenuW(hSubMenu, MF_STRING | (canUndo ? MF_ENABLED : MF_GRAYED), ID_EDIT_UNDO, L"&Undo\tCtrl+Z");
-//        AppendMenuW(hSubMenu, MF_STRING | (canRedo ? MF_ENABLED : MF_GRAYED), ID_EDIT_REDO, L"&Redo\tCtrl+Y");
-//        AppendMenuW(hSubMenu, MF_SEPARATOR, 0, NULL);
-//        AppendMenuW(hSubMenu, MF_STRING, ID_EDIT_COMMIT, L"Create New Version");
-//        AppendMenuW(hSubMenu, MF_STRING, ID_VIEW_HISTORY, L"View &History...\tF5"); // Add History View option
-//        // Add Cut, Copy, Paste later if needed (using EM_CUT, EM_COPY, EM_PASTE)
-//        break;
-//    }
-//
-//    if (hSubMenu) {
-//        // Ensure menu appears correctly relative to the button
-//        TrackPopupMenu(hSubMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RIGHTBUTTON, x, y, 0, hWnd, NULL);
-//        DestroyMenu(hSubMenu); // Destroy the dynamically created popup menu
-//    }
-//
-//    if (hMenu) DestroyMenu(hMenu); // Destroy the base menu if loaded/created
-//}
 
 // Helper function to update tab title based on file name
 void UpdateTabTitle(int index) {
@@ -811,7 +629,7 @@ void UpdateTabTitle(int index) {
 
     std::wstring title = openTabs[index].fileName;
     if (openTabs[index].isModified) {
-        title += L" [*]";
+        title += L" *";
     }
 
     TCITEM tie;
@@ -844,10 +662,6 @@ bool LoadFileIntoEditor(HWND hEdit, const WCHAR* filePath, std::wstring& outCont
                 break;
             }
         }
-    } 
-    else {
-        OutputDebugStringW(L"LoadFileIntoEditor: Could not get parent window handle.\n");
-        // Cannot update tab state without parent/tab index, but continue setting text
     }
     if (tabIndex != -1) openTabs[tabIndex].processingHistoryAction = true;
 
@@ -877,21 +691,17 @@ void RecordHistoryPoint(HWND hWnd, int tabIndex, const std::wstring& description
     }
 
     auto& tab = openTabs[tabIndex];
-    OutputDebugStringW((L"RecordHistoryPoint: Called for tab " + std::to_wstring(tabIndex) + L" with description: " + description + L"\n").c_str());
 
     // Prevent recording if editor is currently being updated by history action
     if (tab.processingHistoryAction) {
-        OutputDebugStringW(L"RecordHistoryPoint: Returning early because processingHistoryAction is true.\n");
         return;
     }
 
     std::wstring currentState = GetRichEditText(tab.hEdit);
 
-    OutputDebugStringW((L"RecordHistoryPoint: Comparing states:\n  Current: [" + currentState + L"]\n  LastHist:[" + tab.textAtLastHistoryPoint + L"]\n").c_str());
 
     // Avoid recording if text hasn't actually changed from last *recorded history point*
     if (currentState == tab.textAtLastHistoryPoint) {
-        OutputDebugStringW(L"RecordHistoryPoint: Returning early because currentState == textAtLastHistoryPoint.\n");
         tab.changesSinceLastHistoryPoint = false; // Reset flag even if no change recorded
 		tab.totalChangeSize = 0; // Reset total change size
         return;
@@ -907,28 +717,22 @@ void RecordHistoryPoint(HWND hWnd, int tabIndex, const std::wstring& description
     // Calculate the change from the *last recorded history state*
     TextChange change = CalculateTextChange(tab.textAtLastHistoryPoint, currentState, tab.hEdit);
 
-    OutputDebugStringW((L"RecordHistoryPoint: Calculated change for recording: +" + std::to_wstring(change.insertedText.length()) + L" / -" + std::to_wstring(change.deletedText.length()) + L"\n").c_str());
-
     // --- Check if the change is non-empty ---
     if (change.insertedText.empty() && change.deletedText.empty()) {
-        OutputDebugStringW(L"RecordHistoryPoint: Returning early because calculated change is empty.\n");
         tab.changesSinceLastHistoryPoint = false; // Reset flag
         return; // Don't record no-op changes
     }
 
-    OutputDebugStringW(L"RecordHistoryPoint: Calling historyManager->recordChange...\n");
 
     // Record the change. This implicitly moves the history manager's 'currentNode' forward.
     tab.historyManager->recordChange(change, description);
 
-    OutputDebugStringW(L"RecordHistoryPoint: Updating textAtLastHistoryPoint and resetting flags/size.\n");
 
     // Update the baseline for the next diff calculation to the *current* state
     tab.textAtLastHistoryPoint = currentState;
     tab.changesSinceLastHistoryPoint = false; // Reset flag, changes up to now are recorded
 	tab.totalChangeSize = 0; // Reset total change size
 
-    OutputDebugStringW(L"RecordHistoryPoint: Successfully recorded history point.\n");
 
     // TODO: Update status bar or log history event
     // Optional: Could prune very old history here if needed
@@ -1017,16 +821,13 @@ void SyncHistoryManagerToEditor(HWND hWnd, int tabIndex) {
         // Already in sync, nothing to do.
         // Update baseline text just in case it drifted? Usually not needed here.
          // tab.textAtLastHistoryPoint = currentState;
-        OutputDebugStringW(L"SyncHistoryManager: Already in sync.\n");
         return;
     }
 
     // If not in sync, perform the search
-    OutputDebugStringW(L"SyncHistoryManager: Editor state differs from internal currentNode. Searching...\n");
     std::shared_ptr<HistoryNode> foundNode = historyManager->findNodeMatchingState(currentState);
 
     if (foundNode) {
-        OutputDebugStringW(L"SyncHistoryManager: Found matching node. Updating internal pointer.\n");
         // Found the node matching the editor's current state.
         // Update the internal pointer *without* changing editor text.
         historyManager->setCurrentNode(foundNode); // Use the new method (see Step III)
@@ -1036,7 +837,6 @@ void SyncHistoryManagerToEditor(HWND hWnd, int tabIndex) {
     else {
         // Editor state does not match ANY known state in the history tree!
         // This implies external modification or a bug.
-        OutputDebugStringW(L"SyncHistoryManager: WARNING! Editor state not found in history tree.\n");
         // What to do? Options:
         // 1. Log error.
         // 2. Treat current state as a new branch point:
@@ -1052,47 +852,39 @@ void SyncHistoryManagerToEditor(HWND hWnd, int tabIndex) {
 
 
 // Recursive helper to populate the history TreeView
-void PopulateHistoryTreeRecursive(HWND hTree,
-    HistoryDialogParams* params,
-    std::shared_ptr<const HistoryNode> node,
-    HTREEITEM hParentItem,
-    HTREEITEM& hCurrentItemTree // Pass by ref to store the HTREEITEM for the current node
-)
+void PopulateHistoryTreeRecursive(HWND hTree, HistoryDialogParams* params, std::shared_ptr<HistoryNode> node, HTREEITEM hParentItem,HTREEITEM& hCurrentItemTree) // Pass by ref to store the HTREEITEM for the current node
 {
     if (!node || !params) return;
 
-    // 1. Create description string for the node
+    // 1. Create description string
     std::wstring description;
-    std::wstring commitMsg = node->commitMessage; // Get the commit message
-
-    // Format timestamp (using existing fallback)
+    std::wstring commitMsg = node->commitMessage;
     time_t tt = std::chrono::system_clock::to_time_t(node->timestamp);
     tm local_tm;
     localtime_s(&local_tm, &tt);
     char timeBuffer[80];
-    strftime(timeBuffer, sizeof(timeBuffer), "%H:%M:%S", &local_tm); // Shorter time format for UI? %Y-%m-%d %H:%M:%S is long
+    strftime(timeBuffer, sizeof(timeBuffer), "%H:%M:%S", &local_tm);
     std::string timestampStr(timeBuffer);
     std::wstring wTimestampStr(timestampStr.begin(), timestampStr.end());
 
     if (node->isRoot()) {
-        description = L"[" + wTimestampStr + L"] " + commitMsg;
+        description = L"[" + wTimestampStr + L"] " + commitMsg + L" (Root)"; // Indicate Root
     }
     else {
-        // Format: [Time] Commit Message (+Ins/-Del)
         description = L"[" + wTimestampStr + L"]";
-
-        // Add commit message if present
         if (!commitMsg.empty()) {
             description += L" " + commitMsg;
         }
         else {
-            description += L" (Auto)"; // Indicate automatic commit if no message
+            description += L" (Auto)";
         }
-
-        // Add change details
         description += L" (+" + std::to_wstring(node->changeFromParent.insertedText.length())
             + L" / -" + std::to_wstring(node->changeFromParent.deletedText.length())
             + L")";
+    }
+    // Add indicator if it's the currently active node
+    if (node == params->nodeAtEditorState) {
+        description += L" (Current)";
     }
 
 
@@ -1101,52 +893,63 @@ void PopulateHistoryTreeRecursive(HWND hTree,
     tvis.hParent = hParentItem;
     tvis.hInsertAfter = TVI_LAST;
     tvis.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_STATE;
-    // IMPORTANT: Need a persistent buffer for pszText if description is dynamically created locally.
-    // Easiest way is often to store the description string itself in the map or another structure associated with the item.
-    // For simplicity here, we'll risk using the local string pointer, assuming TreeView copies it immediately.
-    // A safer approach involves allocating memory or using TVITEMEX's callback mechanism.
-    // Let's try the simpler approach first:
     std::vector<wchar_t> textBuffer(description.begin(), description.end());
-    textBuffer.push_back(L'\0'); // Null-terminate for pszText
-    tvis.item.pszText = textBuffer.data(); // Pointer to the buffer
-
-    tvis.item.lParam = (LPARAM)node.get(); // Raw pointer for map lookup
+    textBuffer.push_back(L'\0');
+    tvis.item.pszText = textBuffer.data();
+    tvis.item.lParam = (LPARAM)node.get(); // use raw pointer for lParam if needed, but map uses shared_ptr
     tvis.item.state = 0;
-    tvis.item.stateMask = TVIS_SELECTED | TVIS_EXPANDED;
+    tvis.item.stateMask = TVIS_SELECTED | TVIS_EXPANDED | TVIS_BOLD; 
 
+    // Highlight the node corresponding to the editor's state
     if (node == params->nodeAtEditorState) {
-        tvis.item.state |= TVIS_SELECTED | TVIS_EXPANDED; // Select and expand current
+        tvis.item.state |= TVIS_SELECTED | TVIS_EXPANDED | TVIS_BOLD; // Make current bold
+        hCurrentItemTree = NULL; // Will be set below after insertion
     }
-    else if (hParentItem == TVI_ROOT && node->children.empty()) {
-        // Maybe don't auto-expand root if it has no children? Or always expand root?
-        tvis.item.state |= TVIS_EXPANDED;
+    else if (hParentItem == TVI_ROOT) {
+        tvis.item.state |= TVIS_EXPANDED; // Always expand root's children maybe?
     }
-    else if (node->children.empty() == false) {
-        // Optionally expand nodes that have children by default
-        // tvis.item.state |= TVIS_EXPANDED;
-    }
-
 
     // 3. Insert item into TreeView
     HTREEITEM hNewItem = TreeView_InsertItem(hTree, &tvis);
 
     // 4. Store mapping from HTREEITEM to shared_ptr
     if (hNewItem) {
-        // Store mapping from HTREEITEM to shared_ptr AND the description string buffer if needed for safety
-        params->treeItemNodeMap[hNewItem] = node;
+        params->treeItemNodeMap[hNewItem] = node; // Store the NON-CONST shared_ptr
         if (node == params->nodeAtEditorState) {
-            hCurrentItemTree = hNewItem;
+            hCurrentItemTree = hNewItem; // Store the HTREEITEM for the current node
         }
     }
 
-    // 5. Recursively add children (process in reverse if you want newest on top within a level)
-    // Standard order (oldest child first):
+    // 5. Recursively add children
+    // Important: Iterate over a *copy* if the children vector might be modified
+    // during recursion (not the case here), or use indices carefully.
+    // Creating a temporary copy of children shared_ptrs before iterating is safest
+    // if recursive calls could potentially modify the parent's children list.
+    // However, PopulateHistoryTreeRecursive doesn't modify, so direct iteration is fine.
     for (const auto& child : node->children) {
         PopulateHistoryTreeRecursive(hTree, params, child, hNewItem, hCurrentItemTree);
     }
-    // Ensure the current node is visible AFTER all items are inserted
+
+    // Ensure the current node is visible AFTER all items are inserted (only at top level call)
     if (hParentItem == TVI_ROOT && hCurrentItemTree) {
-        TreeView_EnsureVisible(hTree, hCurrentItemTree);
+        TreeView_SelectItem(hTree, hCurrentItemTree); // Select it first
+        TreeView_EnsureVisible(hTree, hCurrentItemTree); // Then ensure visible
+    }
+}
+
+
+// Function to recursively remove item and its children from the map
+void RemoveItemAndChildrenFromMap(HWND hTree, HTREEITEM hItem, HistoryDialogParams* params) {
+    if (!hItem || !params) return;
+
+    // Remove the item itself from the map
+    params->treeItemNodeMap.erase(hItem);
+
+    // Recursively remove children
+    HTREEITEM hChild = TreeView_GetChild(hTree, hItem);
+    while (hChild) {
+        RemoveItemAndChildrenFromMap(hTree, hChild, params);
+        hChild = TreeView_GetNextSibling(hTree, hChild);
     }
 }
 
@@ -1156,7 +959,6 @@ void PopulateHistoryTreeRecursive(HWND hTree,
 INT_PTR CALLBACK HistoryDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 {
     HistoryDialogParams* params = nullptr;
-    // Retrieve params pointer stored during WM_INITDIALOG
     if (message != WM_INITDIALOG) {
         params = reinterpret_cast<HistoryDialogParams*>(GetWindowLongPtr(hDlg, DWLP_USER));
     }
@@ -1165,76 +967,112 @@ INT_PTR CALLBACK HistoryDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
     {
     case WM_INITDIALOG:
     {
-        // Retrieve parameters passed from DialogBoxParam
         params = reinterpret_cast<HistoryDialogParams*>(lParam);
         if (!params || !params->historyManager) {
-            EndDialog(hDlg, IDCANCEL); // Cannot proceed without params
+            EndDialog(hDlg, IDCANCEL);
             return (INT_PTR)FALSE;
         }
-        // Store params pointer for later use in other messages
         SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)params);
 
-        // Get control handles
         HWND hTree = GetDlgItem(hDlg, IDC_HISTORY_TREEVIEW);
         HWND hSwitchButton = GetDlgItem(hDlg, ID_SWITCH_VERSION);
-        if (!hTree || !hSwitchButton) {
-            EndDialog(hDlg, IDCANCEL); // Controls missing
+        HWND hDeleteButton = GetDlgItem(hDlg, ID_DELETE_COMMIT); // Get delete button handle
+
+        if (!hTree || !hSwitchButton || !hDeleteButton) {
+            EndDialog(hDlg, IDCANCEL);
             return (INT_PTR)FALSE;
         }
 
         // --- Populate the TreeView ---
-        std::shared_ptr<const HistoryNode> root = params->historyManager->getHistoryTreeRoot();
-        params->nodeAtEditorState = params->historyManager->getCurrentNode(); // Get the node synced by ShowHistoryTree
-        params->treeItemNodeMap.clear(); // Ensure map is empty before population
+        // Need the non-const root to start population if map stores non-const
+        std::shared_ptr<HistoryNode> root = std::const_pointer_cast<HistoryNode>(params->historyManager->getHistoryTreeRoot());
+        params->nodeAtEditorState = params->historyManager->getCurrentNode(); // Still use const for the 'current state' marker
+        params->treeItemNodeMap.clear();
 
-        HTREEITEM hCurrentItemTree = NULL; // To store the HTREEITEM of the selected node
+        HTREEITEM hCurrentItemTree = NULL;
+        // Pass the mutable root to the recursive function
         PopulateHistoryTreeRecursive(hTree, params, root, TVI_ROOT, hCurrentItemTree);
 
-        // Ensure the initially selected item is visible and selected
-        if (hCurrentItemTree) {
-            TreeView_SelectItem(hTree, hCurrentItemTree); // Explicitly select
-            TreeView_EnsureVisible(hTree, hCurrentItemTree);
+        // Initial button state: Disable both buttons initially
+        EnableWindow(hSwitchButton, FALSE);
+        EnableWindow(hDeleteButton, FALSE);
+
+        // If a current item was identified and selected during population, trigger
+        // a notification manually to set initial button states correctly.
+        // However, it's simpler to just call the enabling logic directly here.
+        HTREEITEM hSelectedItem = TreeView_GetSelection(hTree);
+        if (hSelectedItem) {
+            auto it = params->treeItemNodeMap.find(hSelectedItem);
+            if (it != params->treeItemNodeMap.end()) {
+                std::shared_ptr<HistoryNode> selectedNode = it->second; // Now non-const
+                bool canSwitch = (selectedNode != params->nodeAtEditorState);
+                bool canDelete = !selectedNode->isRoot() && (selectedNode != params->nodeAtEditorState);
+                EnableWindow(hSwitchButton, canSwitch);
+                EnableWindow(hDeleteButton, canDelete);
+            }
         }
 
-        // Initial button state: Disable switch button initially,
-        // it will be enabled in WM_NOTIFY if a *different* node is selected.
-        EnableWindow(hSwitchButton, FALSE);
 
-        return (INT_PTR)TRUE; // System sets default focus
+        return (INT_PTR)TRUE;
     }
 
     case WM_NOTIFY:
     {
-        if (!params) break; // Should have params by now
+        if (!params) break;
 
         LPNMHDR pnmh = (LPNMHDR)lParam;
         if (pnmh->idFrom == IDC_HISTORY_TREEVIEW && pnmh->code == TVN_SELCHANGED)
         {
-            HWND hTree = pnmh->hwndFrom; // Handle to the TreeView
+            HWND hTree = pnmh->hwndFrom;
             HWND hSwitchButton = GetDlgItem(hDlg, ID_SWITCH_VERSION);
+            HWND hDeleteButton = GetDlgItem(hDlg, ID_DELETE_COMMIT); // Get delete button
             HTREEITEM hSelectedItem = TreeView_GetSelection(hTree);
 
             bool enableSwitch = false;
+            bool enableDelete = false; // Flag for delete button
+
             if (hSelectedItem != NULL) {
-                // Find the selected node in our map
                 auto it = params->treeItemNodeMap.find(hSelectedItem);
                 if (it != params->treeItemNodeMap.end()) {
-                    std::shared_ptr<const HistoryNode> selectedNode = it->second;
-                    // Enable switch button ONLY if the selected node is NOT the one currently in the editor
+                    std::shared_ptr<HistoryNode> selectedNode = it->second; // Non-const shared_ptr
+
+                    // Enable switch if selected node is not the current editor state node
                     if (selectedNode != params->nodeAtEditorState) {
                         enableSwitch = true;
+                    }
+
+                    // Enable delete if selected node is NOT root AND NOT current editor state node
+                    if (!selectedNode->isRoot() && selectedNode != params->nodeAtEditorState) {
+                        enableDelete = true;
                     }
                 }
             }
             EnableWindow(hSwitchButton, enableSwitch);
+            EnableWindow(hDeleteButton, enableDelete); // Set delete button state
             return (INT_PTR)TRUE;
+        }
+        // Handle other TreeView notifications if necessary (e.g., TVN_KEYDOWN for Delete key)
+        else if (pnmh->idFrom == IDC_HISTORY_TREEVIEW && pnmh->code == TVN_KEYDOWN) {
+            LPNMTVKEYDOWN ptvkd = (LPNMTVKEYDOWN)lParam;
+            if (ptvkd->wVKey == VK_DELETE) {
+                // Post a WM_COMMAND message for ID_DELETE_COMMIT if delete is enabled
+                HWND hDeleteButton = GetDlgItem(hDlg, ID_DELETE_COMMIT);
+                if (IsWindowEnabled(hDeleteButton)) {
+                    // Need to ensure the current selection is retrieved *before* posting
+                    HTREEITEM hSelectedItem = TreeView_GetSelection(pnmh->hwndFrom);
+                    if (hSelectedItem) { // Check if something is selected
+                        PostMessage(hDlg, WM_COMMAND, MAKEWPARAM(ID_DELETE_COMMIT, BN_CLICKED), 0);
+                        return (INT_PTR)TRUE; // Indicate key was handled
+                    }
+                }
+            }
         }
     }
     break;
 
     case WM_COMMAND:
     {
-        if (!params) break; // Should have params by now
+        if (!params) break;
 
         int wmId = LOWORD(wParam);
         switch (wmId)
@@ -1245,41 +1083,105 @@ INT_PTR CALLBACK HistoryDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             HTREEITEM hSelectedItem = TreeView_GetSelection(hTree);
 
             if (hSelectedItem != NULL) {
-                // Find the target node shared_ptr from our map
                 auto it = params->treeItemNodeMap.find(hSelectedItem);
                 if (it != params->treeItemNodeMap.end()) {
-                    std::shared_ptr<const HistoryNode> targetNodeSharedPtr = it->second;
+                    // Note: switchToNode needs non-const if it modifies internal state,
+                    // but it likely only reads and reconstructs. Let's assume it takes non-const
+                    // for consistency or if it updates 'currentNode'.
+                    std::shared_ptr<HistoryNode> targetNodeSharedPtr = it->second; // Use non-const
 
-                    // Retrieve the necessary components from params
                     VersionHistoryManager* historyManager = params->historyManager;
                     int tabIndex = params->tabIndex;
 
                     if (historyManager && tabIndex >= 0 && tabIndex < openTabs.size()) {
-                        // --- Perform the switch ---
-                        // 1. Get the full text state for the target node
-                        std::wstring newState = historyManager->reconstructStateToNode(targetNodeSharedPtr);
+                        // Perform the switch (assuming switchToNode handles state reconstruction)
+                        std::wstring newState = historyManager->switchToNode(targetNodeSharedPtr); // Pass non-const
 
-                        // 2. Update the main Rich Edit control (this clears RichEdit Undo)
+                        // Update the main Rich Edit control
                         SetRichEditText(openTabs[tabIndex].hEdit, newState, targetNodeSharedPtr);
 
-                        // 3. Update the baseline text in the tab info
-                        openTabs[tabIndex].textAtLastHistoryPoint = newState;
-                        openTabs[tabIndex].changesSinceLastHistoryPoint = false; // State now matches history point
-
-                        // 4. Crucially, update the internal pointer AFTER applying the state
-                        historyManager->setCurrentNode(std::const_pointer_cast<HistoryNode>(targetNodeSharedPtr)); // Cast away constness if setCurrentNode takes non-const
-
-                        // 5. Close the dialog indicating success
-                        EndDialog(hDlg, IDOK);
+                        // Close the dialog indicating success
+                        EndDialog(hDlg, IDOK); // Indicate success (switch happened)
                     }
                     else {
-                        // Handle error: manager or tab index invalid
-                        MessageBoxW(hDlg, L"Error retrieving necessary data to switch version.", L"Error", MB_OK | MB_ICONERROR);
+                        MessageBoxW(hDlg, L"Error retrieving data to switch version.", L"Error", MB_OK | MB_ICONERROR);
                     }
                 }
                 else {
-                    // Handle error: selected item not found in map? Should not happen.
-                    MessageBoxW(hDlg, L"Internal error: Cannot find data for selected history item.", L"Error", MB_OK | MB_ICONERROR);
+                    MessageBoxW(hDlg, L"Internal error finding data for selected item.", L"Error", MB_OK | MB_ICONERROR);
+                }
+            }
+            return (INT_PTR)TRUE;
+        }
+
+        case ID_DELETE_COMMIT: // Handle the new delete button
+        {
+            HWND hTree = GetDlgItem(hDlg, IDC_HISTORY_TREEVIEW);
+            HTREEITEM hSelectedItem = TreeView_GetSelection(hTree);
+
+            if (hSelectedItem != NULL) {
+                auto it = params->treeItemNodeMap.find(hSelectedItem);
+                if (it != params->treeItemNodeMap.end()) {
+                    std::shared_ptr<HistoryNode> nodeToDelete = it->second; // Get the non-const shared_ptr
+
+                    // Double-check conditions (redundant with button enabling, but safer)
+                    if (nodeToDelete->isRoot()) {
+                        MessageBoxW(hDlg, L"Cannot delete the initial root version.", L"Delete Prevented", MB_OK | MB_ICONWARNING);
+                        return (INT_PTR)TRUE;
+                    }
+                    if (nodeToDelete == params->nodeAtEditorState) {
+                        MessageBoxW(hDlg, L"Cannot delete the version currently active in the editor.", L"Delete Prevented", MB_OK | MB_ICONWARNING);
+                        return (INT_PTR)TRUE;
+                    }
+
+                    // --- Confirmation ---
+                    std::wstring confirmMsg = L"Are you sure you want to delete this version?";
+                    UINT confirmType = MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2; // Default to No
+
+                    if (!nodeToDelete->children.empty()) {
+                        size_t childCount = nodeToDelete->children.size();
+                        confirmMsg = L"Deleting this version will also permanently delete its "
+                            + std::to_wstring(childCount) + L" child version(s).\n\n"
+                            + L"Are you sure you want to proceed?";
+                        confirmType = MB_YESNO | MB_ICONERROR | MB_DEFBUTTON2; // More severe warning
+                    }
+
+                    int result = MessageBoxW(hDlg, confirmMsg.c_str(), L"Confirm Deletion", confirmType);
+
+                    if (result == IDYES) {
+                        // --- Proceed with Deletion ---
+                        VersionHistoryManager* historyManager = params->historyManager;
+                        if (historyManager) {
+                            // Get parent item *before* deleting the node, to select it later
+                            HTREEITEM hParentItem = TreeView_GetParent(hTree, hSelectedItem);
+
+                            bool deleted = historyManager->deleteNode(nodeToDelete); // Call the manager's method
+
+                            if (deleted) {
+                                // --- Update UI ---
+                                // 1. Remove item and children from the internal map first
+                                RemoveItemAndChildrenFromMap(hTree, hSelectedItem, params);
+
+                                // 2. Remove the item from the TreeView control
+                                TreeView_DeleteItem(hTree, hSelectedItem);
+
+                                // 3. Optionally select the parent item
+                                if (hParentItem) {
+                                    TreeView_SelectItem(hTree, hParentItem);
+                                }
+
+                                // Buttons will be updated by the TVN_SELCHANGED resulting from TreeView_DeleteItem or TreeView_SelectItem
+                                // If selection becomes null, the notification handler should disable buttons.
+
+                                // No need to close dialog, user might want to delete more.
+                            }
+                            else {
+                                // Deletion failed (likely prevented by manager's checks again)
+                                MessageBoxW(hDlg, L"Failed to delete the selected version. It might be the root or the active version.", L"Deletion Failed", MB_OK | MB_ICONERROR);
+                            }
+                        }
+                    }
+                    // else: User clicked No, do nothing.
                 }
             }
             return (INT_PTR)TRUE;
@@ -1290,18 +1192,16 @@ INT_PTR CALLBACK HistoryDlgProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
             return (INT_PTR)TRUE;
         }
     }
-    break;
+    break; // End WM_COMMAND
 
     case WM_DESTROY:
     {
-        // Clean up map if necessary (though shared_ptrs handle memory, the map itself lives with params)
-        // If params were dynamically allocated (they are not here), delete them.
-        // Resetting the DWLP_USER is good practice but not strictly necessary if dialog is destroyed.
+        // Clean up map if necessary (shared_ptrs handle memory)
         SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)nullptr);
     }
     break;
     }
-    return (INT_PTR)FALSE; // Default processing for unhandled messages
+    return (INT_PTR)FALSE;
 }
 
 //---------------------------------------------------------------------------
@@ -1318,7 +1218,6 @@ void ShowHistoryTree(HWND hWnd) {
     // are committed *before* showing the history or syncing.
     auto& tab = openTabs[currentTab];
     if (tab.changesSinceLastHistoryPoint) {
-        OutputDebugStringW(L"ShowHistoryTree: Found pending changes. Recording history point before showing dialog...\n");
         // Kill any pending idle timer as we are committing now.
         if (tab.idleTimerId != 0) {
             KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
@@ -1452,15 +1351,16 @@ INT_PTR CALLBACK CommitMessageDlgProc(HWND hDlg, UINT message, WPARAM wParam, LP
     return (INT_PTR)FALSE; // Default processing
 }
 
+
+//Window procedure for the main window 
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    /*OutputDebugStringW((L"*** WndProc Entered - Message: " + std::to_wstring(message) + L" ***\n").c_str());*/
 
     switch (message)
     {
     case WM_CREATE:
     {
-        /*CreateToolbar(hWnd);*/
         CreateTabControl(hWnd);
         CreateTab(hWnd, L"Untitled", nullptr); // Create initial tab
         ResizeControls(hWnd); // Initial sizing
@@ -1483,88 +1383,67 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         ResizeControls(hWnd);
         break;
 
-    case WM_TIMER:
-    {
-        UINT_PTR timerId = (UINT_PTR)wParam;
-        // Find the tab associated with this timer ID  //Maybe TODO:
-        int tabIndex = -1;
-        for (int i = 0; i < openTabs.size(); ++i) {
-            // Compare against the stored ID OR the HWND used as ID
-            if (openTabs[i].idleTimerId != 0 && reinterpret_cast<UINT_PTR>(openTabs[i].hEdit) == timerId) {
-                // Check if the timer *actually* belongs to this tab,
-                // SetTimer might reuse IDs if we don't manage them carefully.
-                // Using the HWND as ID is generally safer if HWNDs are unique.
-                if (openTabs[i].idleTimerId == GetWindowLongPtr(openTabs[i].hEdit, GWLP_USERDATA)) { /* Example check if storing ID on HWND */ }
-                // Simpler: Assume the HWND cast is the ID if that's what SetTimer used.
-                tabIndex = i;
-                break;
-            }
-            // Fallback if using sequential IDs stored in idleTimerId directly
-            else if (openTabs[i].idleTimerId == timerId) {
-                tabIndex = i;
-                break;
-            }
-        }
+    //case WM_TIMER:
+    //{
+    //    UINT_PTR timerId = (UINT_PTR)wParam;
+    //    // Find the tab associated with this timer ID  //Maybe TODO:
+    //    int tabIndex = -1;
+    //    for (int i = 0; i < openTabs.size(); ++i) {
+    //        // Compare against the stored ID OR the HWND used as ID
+    //        if (openTabs[i].idleTimerId != 0 && reinterpret_cast<UINT_PTR>(openTabs[i].hEdit) == timerId) {
+    //            // Check if the timer *actually* belongs to this tab,
+    //            // SetTimer might reuse IDs if we don't manage them carefully.
+    //            // Using the HWND as ID is generally safer if HWNDs are unique.
+    //            if (openTabs[i].idleTimerId == GetWindowLongPtr(openTabs[i].hEdit, GWLP_USERDATA)) { /* Example check if storing ID on HWND */ }
+    //            // Simpler: Assume the HWND cast is the ID if that's what SetTimer used.
+    //            tabIndex = i;
+    //            break;
+    //        }
+    //        // Fallback if using sequential IDs stored in idleTimerId directly
+    //        else if (openTabs[i].idleTimerId == timerId) {
+    //            tabIndex = i;
+    //            break;
+    //        }
+    //    }
 
-        // Process only if the timer belongs to the *currently active* tab
-        // (We generally only want idle commits for the tab being actively edited)
-        // We *could* allow idle commits for background tabs, but it might be less expected.
-        if (tabIndex != -1 && currentTab == tabIndex) {
-            auto& tab = openTabs[tabIndex];
+    //    // Process only if the timer belongs to the *currently active* tab
+    //    // (We generally only want idle commits for the tab being actively edited)
+    //    // We *could* allow idle commits for background tabs, but it might be less expected.
+    //    if (tabIndex != -1 && currentTab == tabIndex) {
+    //        auto& tab = openTabs[tabIndex];
 
-            // Kill this specific timer instance *first* regardless of action
-            KillTimer(hWnd, timerId);
-            tab.idleTimerId = 0; // Mark timer as inactive
+    //        // Kill this specific timer instance *first* regardless of action
+    //        KillTimer(hWnd, timerId);
+    //        tab.idleTimerId = 0; // Mark timer as inactive
 
-            // Check if changes actually occurred since the last recorded point
-            if (tab.changesSinceLastHistoryPoint) {
-                OutputDebugStringW(L"Idle timer fired. Recording history...\n");
-                // Now record the history point because idle time elapsed *after* changes
-                RecordHistoryPoint(hWnd, tabIndex, L"Auto (Idle)");
-                // RecordHistoryPoint resets cumulativeChangeSize and changesSinceLastHistoryPoint
-            }
-            else {
-                OutputDebugStringW(L"Idle timer fired, but no changes since last history point.\n");
-                // Timer fired, but changes were already committed (e.g., by threshold)
-                // or the state reverted. Do nothing.
-            }
-        }
-        else if (tabIndex != -1) {
-            // Timer fired for an *inactive* tab, or timer ID mismatch somehow.
-            // Kill the timer just to be safe.
-            OutputDebugStringW(L"Idle timer fired for inactive tab or mismatch. Killing timer.\n");
-            KillTimer(hWnd, timerId);
-            // Ensure the corresponding tab's ID is cleared if it matches the timerId
-            if (reinterpret_cast<UINT_PTR>(openTabs[tabIndex].hEdit) == timerId) {
-                openTabs[tabIndex].idleTimerId = 0;
-            }
-        }
-        return 0; // Indicate message processed
-    }
-    break; // End WM_TIMER
+    //        // Check if changes actually occurred since the last recorded point
+    //        if (tab.changesSinceLastHistoryPoint) {
+    //            // Now record the history point because idle time elapsed *after* changes
+    //            RecordHistoryPoint(hWnd, tabIndex, L"Auto (Idle)");
+    //            // RecordHistoryPoint resets cumulativeChangeSize and changesSinceLastHistoryPoint
+    //        }
+    //        else {
+    //            // Timer fired, but changes were already committed (e.g., by threshold)
+    //            // or the state reverted. Do nothing.
+    //        }
+    //    }
+    //    else if (tabIndex != -1) {
+    //        // Timer fired for an *inactive* tab, or timer ID mismatch somehow.
+    //        // Kill the timer just to be safe.
+    //        KillTimer(hWnd, timerId);
+    //        // Ensure the corresponding tab's ID is cleared if it matches the timerId
+    //        if (reinterpret_cast<UINT_PTR>(openTabs[tabIndex].hEdit) == timerId) {
+    //            openTabs[tabIndex].idleTimerId = 0;
+    //        }
+    //    }
+    //    return 0; // Indicate message processed
+    //}
+    //break; // End WM_TIMER
     
     case WM_NOTIFY:
         {
             LPNMHDR pnmh = (LPNMHDR)lParam;
-            /*
-            //if (pnmh->hwndFrom == hToolBar && pnmh->code == TBN_DROPDOWN) {
-            //    // Handle toolbar button dropdown clicks
-            //    LPNMTOOLBAR lpnmTB = (LPNMTOOLBAR)lParam;
-
-            //    // Get button rect
-            //    RECT rc;
-            //    SendMessage(hToolBar, TB_GETRECT, (WPARAM)lpnmTB->iItem, (LPARAM)&rc);
-
-            //    // Convert to screen coordinates
-            //    POINT pt = { rc.left, rc.bottom };
-            //    ClientToScreen(hToolBar, &pt);
-
-            //    // Show the appropriate popup menu
-            //    ShowPopupMenu(hWnd, lpnmTB->iItem, pt.x, pt.y);
-
-            //    return TBDDRET_DEFAULT; // Prevent default handling if needed
-            //}
-            */
+            
             // --- Tab Control Selection Change ---
             if (pnmh->idFrom == IDC_TABCTRL && pnmh->code == TCN_SELCHANGE) {
                 int index = TabCtrl_GetCurSel(hTabCtrl);
@@ -1617,13 +1496,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
                         // 3. Update the total change size since the last *recorded* history point
                         size_t changeSizeThisEvent = currentDeltaChange.insertedText.length() + currentDeltaChange.deletedText.length();
-                        OutputDebugStringW((L"EN_CHANGE: Before accumulation - totalChangeSize=" + std::to_wstring(tab.totalChangeSize)
-                            + L", changeSizeThisEvent=" + std::to_wstring(changeSizeThisEvent) + L"\n").c_str());
 
                         
                         tab.totalChangeSize += changeSizeThisEvent;
 
-                        OutputDebugStringW((L"EN_CHANGE: After accumulation - totalChangeSize=" + std::to_wstring(tab.totalChangeSize) + L"\n").c_str());
 
                         // 4. Update textBeforeChange to prepare for the *next* EN_CHANGE event
                         tab.textBeforeChange = currentState;
@@ -1634,7 +1510,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                         // 6. Check if the significant change threshold is met
                         bool committedDueToThreshold = false;
                         if (tab.totalChangeSize >= SIGNIFICANT_CHANGE_THRESHOLD) {
-                            OutputDebugStringW((L"EN_CHANGE: Significant change threshold MET (" + std::to_wstring(tab.totalChangeSize) + L" >= " + std::to_wstring(SIGNIFICANT_CHANGE_THRESHOLD) + L"). Attempting to record...\n").c_str());
                             // Kill any pending idle timer immediately
                             if (tab.idleTimerId != 0) {
                                 KillTimer(hWnd, reinterpret_cast<UINT_PTR>(tab.hEdit));
@@ -1693,7 +1568,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case ID_FILE_NEW: CreateTab(hWnd, L"Untitled", nullptr); break;
         case ID_FILE_OPEN: 
         {
-            OPENFILENAME ofn; // ... setup ofn ...
+            OPENFILENAME ofn; //  setup ofn
             WCHAR szFile[MAX_PATH] = { 0 };
             ZeroMemory(&ofn, sizeof(ofn));
             ofn.lStructSize = sizeof(ofn);
@@ -1713,115 +1588,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case ID_CLOSE_TAB:   if (currentTab >= 0) CloseTab(currentTab); break;
 
             // --- EDIT ---
-        //case ID_EDIT_UNDO:
-        //    if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
-        //        auto reverseChangeOpt = openTabs[currentTab].historyManager->undo();
-        //        if (reverseChangeOpt) {
-        //            ApplyChangeToRichEdit(openTabs[currentTab].hEdit, *reverseChangeOpt);
-        //            // Update textBeforeChange after applying undo/redo
-        //            openTabs[currentTab].textBeforeChange = GetRichEditText(openTabs[currentTab].hEdit);
-        //        }
-        //    }
-        //    break;
-        // Inside WndProc -> WM_COMMAND
-        case ID_EDIT_REDO:
-            if (currentTab >= 0 && currentTab < openTabs.size() && openTabs[currentTab].historyManager) {
-                auto& tab = openTabs[currentTab]; // Get reference to the current tab info
-                auto& historyManager = tab.historyManager;
-
-                // --- Check if redo is possible ---
-                if (historyManager->canRedo()) { //
-                    std::vector<std::wstring> branches = historyManager->getRedoBranchDescriptions(); //
-
-                    // --- Check for branching ---
-                    if (branches.size() > 1) {
-                        // --- More than one redo path: Show Popup Menu ---
-                        HMENU hPopup = CreatePopupMenu();
-                        if (!hPopup) {
-                            MessageBoxW(hWnd, L"Failed to create redo menu.", L"Error", MB_OK | MB_ICONERROR);
-                            break; // Exit command handling
-                        }
-
-                        // Populate the menu with branch descriptions
-                        for (size_t i = 0; i < branches.size(); ++i) {
-                            AppendMenuW(hPopup, MF_STRING, ID_REDO_BRANCH_BASE + i, branches[i].c_str());
-                        }
-
-                        // Get cursor position to display the menu
-                        POINT pt;
-                        GetCursorPos(&pt); // Get cursor position in screen coordinates
-
-                        // Display the popup menu and wait for user selection
-                        // TPM_RETURNCMD makes TrackPopupMenu return the selected command ID
-                        int selectedBranchCmd = TrackPopupMenu(hPopup,
-                            TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
-                            pt.x, pt.y, 0, hWnd, NULL);
-
-                        DestroyMenu(hPopup); // Clean up the menu
-
-                        if (selectedBranchCmd != 0) {
-                            // User selected a branch
-                            int selectedIndex = selectedBranchCmd - ID_REDO_BRANCH_BASE; // Convert command ID back to index
-
-                            // Validate the index just in case
-                            if (selectedIndex >= 0 && selectedIndex < branches.size()) {
-                                // Move to the selected child node internally
-                                if (historyManager->moveCurrentNodeToChild(selectedIndex)) { //
-                                    // Reconstruct the state of the *new* current node
-                                    std::shared_ptr<const HistoryNode> newNode = historyManager->getCurrentNode(); //
-                                    std::wstring newState = historyManager->getCurrentState(); // Or reconstructStateToNode(newNode)
-
-                                    // Update the Rich Edit control
-                                    SetRichEditText(tab.hEdit, newState, newNode); //
-
-                                    // Update tab state
-                                    tab.textAtLastHistoryPoint = newState; //
-                                    tab.changesSinceLastHistoryPoint = false; //
-                                    // Determine modification status based on whether newState matches the saved state
-                                    // tab.isModified = ... (compare newState with saved state if tracked)
-                                    UpdateTabTitle(currentTab); //
-                                    UpdateWindowTitle(hWnd); //
-                                }
-                                else {
-                                    MessageBoxW(hWnd, L"Failed to move to selected redo branch.", L"Error", MB_OK | MB_ICONERROR);
-                                }
-                            }
-                            else {
-                                MessageBoxW(hWnd, L"Invalid redo branch selected.", L"Error", MB_OK | MB_ICONERROR);
-                            }
-                        }
-                        // If selectedBranchCmd is 0, the user dismissed the menu - do nothing further.
-
-                    }
-                    else {
-                        // --- Only one (or zero, though canRedo check prevents zero) redo path: Standard Redo ---
-                        // Use moveCurrentNodeToChild with default behavior (moves to the first/only child)
-                        if (historyManager->moveCurrentNodeToChild()) { // Use default index behavior
-                            // Reconstruct the state of the *new* current node
-                            std::shared_ptr<const HistoryNode> newNode = historyManager->getCurrentNode(); //
-                            std::wstring newState = historyManager->getCurrentState(); // Or reconstructStateToNode(newNode)
-
-
-                            // Update the Rich Edit control
-                            SetRichEditText(tab.hEdit, newState, newNode); //
-
-
-                            // Update tab state
-                            tab.textAtLastHistoryPoint = newState; //
-                            tab.changesSinceLastHistoryPoint = false; //
-                            // tab.isModified = ...
-                            UpdateTabTitle(currentTab); //
-                            UpdateWindowTitle(hWnd); //
-                        }
-                        else {
-                            // Should not happen if canRedo was true and branches.size() <= 1
-                            OutputDebugStringW(L"Warning: moveCurrentNodeToChild failed unexpectedly in single-branch redo.\n");
-                        }
-                    }
-                }
-                // else: Cannot redo (canRedo() returned false) - do nothing or provide feedback
-            }
-            break; // End ID_EDIT_REDO
         case ID_VIEW_HISTORY:
             if (currentTab >= 0) {
                 SyncHistoryManagerToEditor(hWnd, currentTab); // 
@@ -1870,9 +1636,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                             std::shared_ptr<const HistoryNode> newNode = tab.historyManager->getCurrentNode();
                             std::wstring newState = tab.historyManager->getCurrentState();
                             SetRichEditText(tab.hEdit, newState, newNode);
-                        }
-                        else {
-                            OutputDebugStringW(L"ID_HISTORY_NEXT_CHILD: moveCurrentNodeToChild(0) failed unexpectedly.\n");
                         }
                     }
                     else {
@@ -1984,41 +1747,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     }
     break; // End WM_COMMAND
 
-	////TODO: this keyboard shortcuts handling is not working right now, need changes
- //   case WM_KEYDOWN:
- //       // Handle accelerators here if not using an accelerator table or for specific needs
- //       if (GetKeyState(VK_CONTROL) & 0x8000) { // Check if Control key is pressed
- //           switch (wParam) {
- //           case 'P': // Ctrl+P
- //               ShowCommandPalette(hWnd);
- //               return 0; 
- //           case 'T': // Ctrl+T
- //               PostMessage(hWnd, WM_COMMAND, ID_FILE_NEW, 0); // Use PostMessage to avoid re-entrancy issues
- //               return 0;
- //           case 'W': // Ctrl+W
- //               if (currentTab >= 0) {
- //                   PostMessage(hWnd, WM_COMMAND, ID_CLOSE_TAB, 0);
- //               }
- //               return 0; 
- //           case 'O': // Ctrl+O
- //               PostMessage(hWnd, WM_COMMAND, ID_FILE_OPEN, 0);
- //               return 0; 
- //           case 'S': // Ctrl+S
- //               if (currentTab >= 0) {
- //                   // Check Shift key for Save As (Ctrl+Shift+S)
- //                   if (GetKeyState(VK_SHIFT) & 0x8000) {
- //                       PostMessage(hWnd, WM_COMMAND, ID_FILE_SAVEAS, 0);
- //                   }
- //                   else {
- //                       PostMessage(hWnd, WM_COMMAND, ID_FILE_SAVE, 0);
- //                   }
- //               }
- //               return 0; 
- //           }
- //       }
- //       return DefWindowProc(hWnd, message, wParam, lParam); // Default handling for other keys
-
-
     case WM_CLOSE:
         // Iterate through tabs and check for unsaved changes *before* destroying
         while (!openTabs.empty()) {
@@ -2037,8 +1765,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
 
     case WM_DESTROY:
-        // Clean up resources like GDI objects (fonts) if necessary
-        // ...
         PostQuitMessage(0);
         break;
 

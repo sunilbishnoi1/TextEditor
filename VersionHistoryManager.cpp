@@ -1,9 +1,9 @@
 #include "VersionHistoryManager.h"
 #include <Windows.h>
 #include <stack>
+#include <algorithm>
 
-
-// --- Helper Function: Apply Change ---
+// --- Helper Function: ---
 
 std::wstring VersionHistoryManager::applyChangeToString(const std::wstring& text, const TextChange& change) {
     std::wstring result = text;
@@ -11,7 +11,7 @@ std::wstring VersionHistoryManager::applyChangeToString(const std::wstring& text
     size_t delLength = change.deletedText.length();
     size_t insLength = change.insertedText.length();
 
-    // Clamp position to be within the bounds of the string
+    // keep position to be within the bounds of the string
     if (pos > result.length()) {
         pos = result.length();
     }
@@ -79,10 +79,7 @@ void VersionHistoryManager::setCurrentNode(std::shared_ptr<HistoryNode> node) {
         // for coordinating the editor state and baseline text updates.
     }
     else {
-        // Handle error: Tried to set current node to null? Log or throw?
-        // For robustness, perhaps revert to root? Or just ignore?
-        // Let's ignore for now, but logging would be good.
-        OutputDebugStringW(L"VersionHistoryManager::setCurrentNode called with null node.\n");
+        // Handle error: Tried to set current node to null? .
     }
 }
 
@@ -130,7 +127,6 @@ bool VersionHistoryManager::moveCurrentNodeToChild(size_t childIndex) {
         return true;
     }
 
-    OutputDebugStringW(L"VersionHistoryManager::moveCurrentNodeToChild: Provided childIndex out of bounds.\n");
     return false;
 }
 
@@ -187,7 +183,6 @@ std::vector<std::wstring> VersionHistoryManager::getRedoBranchDescriptions() con
 // Reconstructs state by applying changes down from the root to the target node.
 std::wstring VersionHistoryManager::reconstructStateToNode(std::shared_ptr<const HistoryNode> targetNode) const {
     if (!targetNode) {
-        // Consider logging this error or handling it based on application needs
         return L""; // Return empty for null target
     }
 
@@ -277,23 +272,14 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
             // and states are cached when children are processed. If it does,
             // reconstruct and cache. This indicates potential issue elsewhere.
             // For robustness:
-            OutputDebugStringW(L"findNodeMatchingState: Cache miss, reconstructing state...\n");
             nodeState = reconstructStateToNode(node);
             stateCache[node] = nodeState;
-            // Log warning? std::cerr << "Warning: Cache miss in findNodeMatchingState BFS for node." << std::endl;
         }
 
         if (nodeState != targetState) {
-            // Only log if they don't match to avoid excessive output
-            OutputDebugStringW(L"findNodeMatchingState: Comparing states:\n");
-            OutputDebugStringW((L"  Editor Target State : [" + targetState + L"] (Length: " + std::to_wstring(targetState.length()) + L")\n").c_str());
-            OutputDebugStringW((L"  Reconstructed State : [" + nodeState + L"] (Length: " + std::to_wstring(nodeState.length()) + L")\n").c_str());
             // Optional: Add code here to compare character by character and log the first difference
             for (size_t i = 0; i < std::min(targetState.length(), nodeState.length()); ++i) {
                 if (targetState[i] != nodeState[i]) {
-                    OutputDebugStringW((L"  Mismatch found at index " + std::to_wstring(i)
-                        + L": Editor char=" + std::to_wstring(targetState[i])
-                        + L", Reconstructed char=" + std::to_wstring(nodeState[i]) + L"\n").c_str());
                     break;
                 }
             }
@@ -309,7 +295,6 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
             // Note: If multiple nodes can have identical text states, this finds
             // the first one encountered in BFS. You might need different logic
             // (e.g., find latest timestamp) if specific duplicates must be handled.
-            OutputDebugStringW(L"findNodeMatchingState: FOUND matching node.\n"); 
             return node;
         }
 
@@ -328,7 +313,6 @@ std::shared_ptr<HistoryNode> VersionHistoryManager::findNodeMatchingState(const 
     }
 
     // Target state was not found anywhere in the reachable history tree.
-    OutputDebugStringW(L"findNodeMatchingState: Target state NOT found after searching tree.\n");
     return nullptr;
 }
 
@@ -343,4 +327,57 @@ std::shared_ptr<const HistoryNode> VersionHistoryManager::getHistoryTreeRoot() c
 std::shared_ptr<const HistoryNode> VersionHistoryManager::getCurrentNode() const {
     // Return a const pointer to the node our internal state currently points to.
     return currentNode;
+}
+
+
+// Helper to get a non-const version of the current node pointer
+// Needed for comparisons during deletion prevention.
+std::shared_ptr<HistoryNode> VersionHistoryManager::getMutableCurrentNode() {                 //mutable means modifiable
+    return currentNode;
+}
+
+bool VersionHistoryManager::deleteNode(std::shared_ptr<HistoryNode> nodeToDelete) {
+    if (!nodeToDelete) {
+        return false;
+    }
+
+    // --- Pre-deletion Checks ---
+    // 1. Prevent deleting the root node
+    if (nodeToDelete == root) {
+        return false;
+    }
+
+    // 2. Prevent deleting the node corresponding to the current editor state
+    //    We compare pointers directly. getMutableCurrentNode() returns the same non-const pointer.
+    if (nodeToDelete == getMutableCurrentNode()) {
+        return false;
+    }
+
+    // 3. Get the parent 
+    std::shared_ptr<HistoryNode> parentNode = nodeToDelete->parent.lock();
+    if (!parentNode) {
+        // This indicates an orphaned node or inconsistent tree state, which shouldn't happen
+        // in a correctly managed tree unless nodeToDelete was already detached.
+        return false;
+    }
+
+    // --- Perform Deletion ---
+    // Find the node within the parent's children list
+    auto& childrenVec = parentNode->children;
+    auto it = std::find(childrenVec.begin(), childrenVec.end(), nodeToDelete);
+
+    if (it != childrenVec.end()) {
+        // Found the child, erase it from the parent's vector.
+        // Erasing the shared_ptr decrements its reference count. If this was the last
+        // shared_ptr holding the node (and its subtree, assuming no other external refs),
+        // the node and its children will be destructed recursively due to shared_ptr mechanics.
+        childrenVec.erase(it);
+        // The node's parent weak_ptr will become expired naturally.
+        // Children's parent weak_ptrs (if any were deleted recursively) also expire.
+        return true;
+    }
+    else {
+        // Node wasn't found in its supposed parent's children list. Inconsistent state.
+        return false;
+    }
 }
