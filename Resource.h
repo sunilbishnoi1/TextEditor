@@ -47,6 +47,7 @@
 #define ID_DELETE_COMMIT            1010    // "Delete" Button ID
 #define ID_HISTORY_PREVIOUS             32775 
 #define ID_HISTORY_NEXT_CHILD           32776
+#define ID_HELP_SHORTCUTS              32777
 
 // Next default values for new objects
 // 

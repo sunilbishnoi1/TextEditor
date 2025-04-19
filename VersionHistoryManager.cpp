@@ -95,7 +95,7 @@ bool VersionHistoryManager::canRedo() const {
     return currentNode && !currentNode->children.empty();
 }
 
-// Moves internal pointer back for synchronization after standard undo.
+// Moves internal pointer back for synchronization after undo.
 bool VersionHistoryManager::moveCurrentNodeToParent() {
     if (!canUndo()) {
         return false;

@@ -1738,6 +1738,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case IDM_THEME_SYSTEM:/* ... */ break;
 
             // --- HELP & EXIT ---
+        case ID_HELP_SHORTCUTS:
+        {
+            std::wstring shortcutMsg = L"Keyboard Shortcuts:\n";
+            shortcutMsg += L"Version History:\n";
+            shortcutMsg += L"  Ctrl + Alt + Left : Navigate to Parent Version\n";
+            shortcutMsg += L"  Ctrl + Alt + Right : Navigate to Child Version\n\n";
+            // Add more shortcuts as you implement them (Undo, Redo, Cut, Copy, Paste, etc.)
+
+            MessageBoxW(hWnd, shortcutMsg.c_str(), L"Keyboard Shortcuts", MB_OK | MB_ICONINFORMATION);
+        }
+        break; // <-- End ID_HELP_SHORTCUTS
+
         case IDM_ABOUT: DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About); break;
         case IDM_EXIT: DestroyWindow(hWnd); break;
 
