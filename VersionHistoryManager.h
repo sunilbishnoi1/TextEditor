@@ -5,7 +5,7 @@
 #include <memory>       // For std::shared_ptr, std::weak_ptr
 #include <string>       // For std::wstring
 #include <vector>       // For std::vector
-#include <optional>     // For std::optional
+//#include <optional>     // For std::optional
 #include <stack>        // For std::stack
 #include <queue>        // For std::queue
 #include <map>          // For std::map
